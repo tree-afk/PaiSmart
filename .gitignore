@@ -74,3 +74,6 @@ frontend/AutoClaw.pem
 *.pem
 src/main/resources/cert
 /.runtime
+
+# 离线 RAG 评测报告（eval.output-dir）
+/eval-reports

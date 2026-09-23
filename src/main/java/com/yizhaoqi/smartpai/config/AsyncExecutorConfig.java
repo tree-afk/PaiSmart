@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.config;
 
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -52,6 +53,42 @@ public class AsyncExecutorConfig {
         executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         executor.setAwaitTerminationSeconds(10);
         executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 文档冲突检测。单线程串行扫描，避免批量上传时 KNN 查询挤占线上检索；
+     * 队列满时丢弃并记日志（冲突检测是旁路任务，不能反压到 Kafka 消费线程）。
+     */
+    @Bean(name = "conflictDetectionExecutor")
+    public ThreadPoolTaskExecutor conflictDetectionExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("doc-conflict-");
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(500);
+        executor.setRejectedExecutionHandler((task, pool) -> LoggerFactory.getLogger(AsyncExecutorConfig.class)
+                .warn("冲突检测队列已满，丢弃本次检测任务"));
+        executor.setAwaitTerminationSeconds(10);
+        executor.setWaitForTasksToCompleteOnShutdown(false);
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * 离线评测里的生成 / 评委调用，带超时等待，和线上问答的线程池隔离
+     */
+    @Bean(name = "evalLlmExecutor")
+    public ThreadPoolTaskExecutor evalLlmExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("rag-eval-llm-");
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(20);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.setAwaitTerminationSeconds(10);
+        executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.initialize();
         return executor;
     }

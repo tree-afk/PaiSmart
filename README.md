@@ -139,6 +139,61 @@ frontend/
 
 系统采用 WebSocket 技术，提供用户与 AI 系统之间的实时交互，支持响应式聊天界面，便于知识检索和 AI 互动。
 
+### 文档冲突检测
+
+完全相同的文件在上传时按 MD5 去重。内容冲突（两篇文档对同一个配置项给了不同的值）在文件向量化完成后异步检测，检测失败只记日志，不影响入库。
+
+- 取新文件前 `max-chunks-per-file` 个分块，逐块在 `knowledge_base` 别名上做 KNN，只在同一可见范围内找其他文件的分块（同一上传者、公开文档、同组织标签，复用检索的权限过滤）。
+- 向量余弦相似度达到 `similarity-threshold`，归一化（全半角、大小写、空白、标点）后文本不完全相同，把数字、版本号、日期替换成占位符后文本仍高度相似，且两侧抽出的关键值集合不同，才记为疑似冲突。
+- 可选开启 LLM 二次确认，所有候选合并成一次调用，调用失败时保留规则结果。
+- 疑似冲突写入 `document_conflicts` 表，同一分块对已有 PENDING 或 IGNORED 记录时不会重复写入。系统不会自动删除或覆盖任何文档，由管理员决定保留哪一篇。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `knowledge.conflict.enabled` | `true` | 总开关（`KNOWLEDGE_CONFLICT_ENABLED`） |
+| `knowledge.conflict.similarity-threshold` | `0.9` | 分块向量余弦相似度阈值 |
+| `knowledge.conflict.masked-text-similarity-threshold` | `0.8` | 屏蔽关键值后的文本相似度阈值 |
+| `knowledge.conflict.max-chunks-per-file` | `200` | 每个新文件最多检查的分块数 |
+| `knowledge.conflict.neighbors-per-chunk` | `3` | 每个分块取几个最相似的其他文件分块 |
+| `knowledge.conflict.max-conflicts-per-file` | `50` | 单个文件一次最多记录的疑似冲突数 |
+| `knowledge.conflict.llm-confirm.enabled` | `false` | LLM 二次确认（`KNOWLEDGE_CONFLICT_LLM_CONFIRM_ENABLED`） |
+
+管理员接口（`/api/v1/admin/**` 仅 ADMIN 可访问）：
+
+- `GET /api/v1/admin/document-conflicts?status=PENDING&page=1&size=20` 分页查看疑似冲突
+- `POST /api/v1/admin/document-conflicts/{id}/resolve`，请求体 `{"action": "KEEP_NEW", "note": "..."}`。`KEEP_NEW` 通过现有删除流程删掉旧文档，`KEEP_EXISTING` 删掉新文档，`IGNORED` 只标记不是冲突。被删除文件参与的其他待处理冲突会标记为 `OBSOLETE`。
+
+### 离线 RAG 评测
+
+评测把检索和生成分开看，回答错了能分清是没搜到，还是搜到了没用对。
+
+- 数据集为 JSONL，每行一个用例：`{"question": "...", "expectedFileMd5s": ["..."], "expectedFileNames": ["..."], "referenceAnswer": "..."}`，期望文档 MD5 和文件名至少填一个才计算检索指标。示例见 `src/main/resources/eval/sample-eval.jsonl`（针对启动时导入的 `docs/paismart.pdf`）。
+- 检索以发起评测的管理员身份调用线上同一条混合检索链路，计算 Recall@K（前 K 条里出现任一期望文档即命中）和 MRR，并记录检索模式（`HYBRID` / `HYBRID_RRF` / `TEXT_ONLY`）。
+- 生成沿用问答的提示词约定（`ai.prompt.rules` + 检索片段块），用非流式调用得到回答。
+- 另起一次 LLM 调用做评委，对照参考答案和检索证据输出 `{"score": 1-5, "correct": true/false, "reason": "..."}`。评委提示词把所有字段当作数据，不因回答更长而加分；输出解析失败的用例一律标记人工复核，另按 `eval.human-review-sample-rate` 随机抽样人工复核。
+- 报告给出 Recall@K、MRR、评委平均分、准确率和问题归因：`PROMPT_OR_MODEL`（检索命中但回答错，查提示词或模型），`RETRIEVAL_MISS`（检索未命中，查分块和检索），以及逐条明细。报告以 JSON 写入 `eval.output-dir`，文件名带 `label`，调整分块前后各跑一次、用不同 label 区分即可对比。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `eval.output-dir` | `eval-reports` | 报告输出目录（`EVAL_OUTPUT_DIR`） |
+| `eval.dataset-dir` | `eval-datasets` | `datasetPath` 只能指向该目录下的文件，或 `classpath:eval/xxx.jsonl` |
+| `eval.human-review-sample-rate` | `0.1` | 随机抽样人工复核比例 |
+| `eval.random-seed` | 空 | 固定后两次评测抽到同一批用例 |
+| `eval.default-top-k` / `eval.max-top-k` | `5` / `20` | 检索条数 |
+| `eval.max-cases` | `500` | 单次评测最多用例数 |
+| `eval.generation-max-tokens` / `eval.judge-max-tokens` | `1500` / `300` | 生成和评委的最大输出 tokens |
+| `eval.generation-timeout-seconds` / `eval.judge-timeout-seconds` | `90` / `60` | 生成和评委的超时 |
+| `eval.requester-id` | `system-eval` | 生成和评委调用的请求方，以 system 开头不占用户配额 |
+
+管理员接口：
+
+- `POST /api/v1/admin/eval/run`（JSON）：`{"datasetPath": "classpath:eval/sample-eval.jsonl", "topK": 5, "label": "chunk-512"}`，也可以用 `jsonl` 字段直接传内容
+- `POST /api/v1/admin/eval/run`（multipart）：`file` 为 JSONL 文件，可带 `topK`、`label` 参数
+- `GET /api/v1/admin/eval/runs`、`GET /api/v1/admin/eval/runs/latest`、`GET /api/v1/admin/eval/runs/{runId}` 查看进度、汇总指标和报告路径
+- `GET /api/v1/admin/eval/runs/{runId}/report` 获取完整报告 JSON
+
+同一时间只运行一个评测任务，任务状态保存在内存里（最近 20 个），报告文件保存在磁盘上。
+
 ## 前置环境
 
 在开始之前，请确保已安装以下软件：

@@ -278,11 +278,10 @@ public class ChatHandler {
 
             // search_knowledge 返回的 SearchResult 列表与模型 prompt 中的 [N] 编号一一对应，
             // 必须把它落到 generationReferenceMappings 里，否则前端点击引用拿不到 MD5/页码。
-            if ("search_knowledge".equals(toolCall.name())) {
-                replaceReferencesFromSearchTool(generationId, userMessage, toolResult);
-            }
-
             String content = toolResult.content();
+            if ("search_knowledge".equals(toolCall.name())) {
+                content = appendReferencesFromSearchTool(generationId, userMessage, toolResult);
+            }
             if (content == null || content.isBlank()) {
                 content = "工具 " + toolCall.name() + " 执行成功，但没有返回可展示内容。";
             }
@@ -306,34 +305,37 @@ public class ChatHandler {
         }
     }
 
-    private void replaceReferencesFromSearchTool(String generationId,
+    String appendReferencesFromSearchTool(String generationId,
                                                  String userMessage,
                                                  AgentToolRegistry.ToolExecutionResult toolResult) {
         if (toolResult == null || toolResult.data() == null) {
-            return;
+            return toolResult == null ? null : toolResult.content();
         }
         Object resultsObj = toolResult.data().get("results");
         if (!(resultsObj instanceof List<?> rawList) || rawList.isEmpty()) {
-            return;
+            return toolResult.content();
         }
 
-        Map<Integer, ReferenceInfo> mapping = new HashMap<>();
-        int referenceNumber = 1;
-        for (Object item : rawList) {
+        Map<Integer, ReferenceInfo> mapping = new HashMap<>(
+                generationReferenceMappings.getOrDefault(generationId, Map.of()));
+        int firstReferenceNumber = mapping.keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
+        for (int i = 0; i < rawList.size(); i++) {
+            Object item = rawList.get(i);
             if (!(item instanceof SearchResult result) || result.getFileMd5() == null) {
                 continue;
             }
             String fileLabel = result.getFileName() != null ? result.getFileName() : "unknown";
-            mapping.put(referenceNumber, buildReferenceInfo(result, fileLabel, userMessage));
-            referenceNumber++;
+            mapping.put(firstReferenceNumber + i, buildReferenceInfo(result, fileLabel, userMessage));
         }
         if (mapping.isEmpty()) {
-            return;
+            return toolResult.content();
         }
-        // 模型每次 search_knowledge 都会拿到 [1]..[K] 重新编号，因此按"覆盖"语义保存最新一次的引用映射。
         generationReferenceMappings.put(generationId, mapping);
         chatGenerationStateService.updateReferenceMappings(generationId, toSerializableReferenceMappings(mapping));
-        logger.info("ReAct search_knowledge 引用映射已刷新: generationId={}, count={}", generationId, mapping.size());
+        logger.info("ReAct search_knowledge 引用映射已追加: generationId={}, count={}", generationId, mapping.size());
+        List<SearchResult> results = rawList.stream().filter(SearchResult.class::isInstance)
+                .map(SearchResult.class::cast).toList();
+        return AgentToolRegistry.formatSearchResults(results, firstReferenceNumber);
     }
 
     private record ExecutedToolResult(String content, boolean streamedToUser) {

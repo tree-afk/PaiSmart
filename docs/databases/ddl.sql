@@ -176,3 +176,32 @@ CREATE TABLE IF NOT EXISTS `user_daily_chat_count` (
     UNIQUE KEY `uk_user_date` (`user_id`, `record_date`) COMMENT '用户 + 日期唯一索引',
     INDEX `idx_record_date` (`record_date`) COMMENT '按日期查询索引'
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户每日对话次数记录表';
+
+
+CREATE TABLE IF NOT EXISTS `document_conflicts` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键 ID',
+    `pair_key` VARCHAR(160) NOT NULL COMMENT '与方向无关的分块对标识，用于去重',
+    `new_file_md5` VARCHAR(32) NOT NULL COMMENT '新文件 MD5',
+    `new_chunk_id` INT NOT NULL COMMENT '新文件分块序号',
+    `new_file_name` VARCHAR(255) DEFAULT NULL COMMENT '新文件名',
+    `existing_file_md5` VARCHAR(32) NOT NULL COMMENT '已有文件 MD5',
+    `existing_chunk_id` INT NOT NULL COMMENT '已有文件分块序号',
+    `existing_file_name` VARCHAR(255) DEFAULT NULL COMMENT '已有文件名',
+    `similarity` DOUBLE NOT NULL COMMENT '分块向量余弦相似度',
+    `masked_similarity` DOUBLE DEFAULT NULL COMMENT '屏蔽数字/版本号/日期后的文本相似度',
+    `new_snippet` VARCHAR(1000) DEFAULT NULL COMMENT '新分块摘要',
+    `existing_snippet` VARCHAR(1000) DEFAULT NULL COMMENT '已有分块摘要',
+    `new_values` VARCHAR(500) DEFAULT NULL COMMENT '只在新分块中出现的关键值',
+    `existing_values` VARCHAR(500) DEFAULT NULL COMMENT '只在已有分块中出现的关键值',
+    `llm_reason` VARCHAR(500) DEFAULT NULL COMMENT 'LLM 二次确认理由',
+    `status` VARCHAR(20) NOT NULL COMMENT 'PENDING/KEEP_NEW/KEEP_EXISTING/IGNORED/OBSOLETE',
+    `created_at` DATETIME DEFAULT NULL COMMENT '发现时间',
+    `resolved_by` VARCHAR(64) DEFAULT NULL COMMENT '处理人',
+    `resolved_at` DATETIME DEFAULT NULL COMMENT '处理时间',
+    `resolution_note` VARCHAR(500) DEFAULT NULL COMMENT '处理备注',
+    PRIMARY KEY (`id`),
+    INDEX `idx_doc_conflict_pair_key` (`pair_key`),
+    INDEX `idx_doc_conflict_status` (`status`),
+    INDEX `idx_doc_conflict_new_md5` (`new_file_md5`),
+    INDEX `idx_doc_conflict_existing_md5` (`existing_file_md5`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='疑似文档冲突记录表';

@@ -5,9 +5,11 @@ import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
 import com.yizhaoqi.smartpai.service.VectorizationService;
+import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
 import io.minio.errors.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
@@ -26,6 +28,8 @@ public class FileProcessingConsumer {
     private final DocumentService documentService;
     @Autowired
     private KafkaConfig kafkaConfig;
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
 
     public FileProcessingConsumer(
@@ -83,6 +87,7 @@ public class FileProcessingConsumer {
             );
             documentService.markVectorizationCompleted(task.getFileMd5(), vectorizationResult);
             log.info("向量化完成，fileMd5: {}", task.getFileMd5());
+            publishVectorized(task.getFileMd5());
         } catch (Exception e) {
             documentService.markVectorizationFailed(task.getFileMd5(), e);
             log.error("Error processing task: {}", task, e);
@@ -97,6 +102,20 @@ public class FileProcessingConsumer {
                     log.error("Error closing file stream", e);
                 }
             }
+        }
+    }
+
+    /**
+     * 通知冲突检测等后置任务。后置任务异步执行，这里任何异常都不能影响入库结果和 Kafka 提交。
+     */
+    private void publishVectorized(String fileMd5) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new DocumentVectorizedEvent(fileMd5));
+        } catch (Exception e) {
+            log.warn("发布向量化完成事件失败，忽略: fileMd5={}, error={}", fileMd5, e.getMessage());
         }
     }
 

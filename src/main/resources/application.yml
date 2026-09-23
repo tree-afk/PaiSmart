@@ -192,6 +192,43 @@ knowledge:
       rate-limit-backoff-seconds: ${KNOWLEDGE_INDEX_REBUILD_RATE_LIMIT_BACKOFF_SECONDS:20}
       # 切换别名前在新索引上抽样跑的测试问题，每个问题至少召回一条才允许切换
       validation-queries: []
+  # 文档冲突检测：新文件向量化完成后异步扫描，相似度高但数字 / 版本号 / 日期不同的分块对记为疑似冲突
+  # 只记录不处理，管理员通过 /api/v1/admin/document-conflicts 人工决定保留哪一篇
+  conflict:
+    enabled: ${KNOWLEDGE_CONFLICT_ENABLED:true}
+    # 分块向量余弦相似度阈值
+    similarity-threshold: ${KNOWLEDGE_CONFLICT_SIMILARITY_THRESHOLD:0.9}
+    # 数字 / 版本号 / 日期替换成占位符后的文本相似度阈值（字符二元组 Dice）
+    masked-text-similarity-threshold: ${KNOWLEDGE_CONFLICT_MASKED_SIMILARITY_THRESHOLD:0.8}
+    max-chunks-per-file: ${KNOWLEDGE_CONFLICT_MAX_CHUNKS_PER_FILE:200}
+    neighbors-per-chunk: ${KNOWLEDGE_CONFLICT_NEIGHBORS_PER_CHUNK:3}
+    max-conflicts-per-file: ${KNOWLEDGE_CONFLICT_MAX_CONFLICTS_PER_FILE:50}
+    snippet-chars: 300
+    llm-confirm:
+      # 规则候选再用一次批量 LLM 调用确认，失败时保留规则结果
+      enabled: ${KNOWLEDGE_CONFLICT_LLM_CONFIRM_ENABLED:false}
+      max-chunk-chars: 800
+      max-completion-tokens: 800
+      requester-id: system-conflict
+
+# 离线 RAG 评测：POST /api/v1/admin/eval/run，检索看 Recall@K / MRR，生成看 LLM-as-a-judge
+eval:
+  output-dir: ${EVAL_OUTPUT_DIR:eval-reports}
+  # datasetPath 只能指向该目录下的文件，或 classpath:eval/xxx.jsonl
+  dataset-dir: ${EVAL_DATASET_DIR:eval-datasets}
+  # 随机抽样给人工复核的比例；评委输出解析失败的用例总是需要复核
+  human-review-sample-rate: ${EVAL_HUMAN_REVIEW_SAMPLE_RATE:0.1}
+  # 固定种子后两次评测抽到同一批用例，便于对比；为空时每次随机
+  random-seed: ${EVAL_RANDOM_SEED:}
+  default-top-k: ${EVAL_DEFAULT_TOP_K:5}
+  max-top-k: 20
+  max-cases: ${EVAL_MAX_CASES:500}
+  generation-max-tokens: ${EVAL_GENERATION_MAX_TOKENS:1500}
+  judge-max-tokens: ${EVAL_JUDGE_MAX_TOKENS:300}
+  generation-timeout-seconds: ${EVAL_GENERATION_TIMEOUT_SECONDS:90}
+  judge-timeout-seconds: ${EVAL_JUDGE_TIMEOUT_SECONDS:60}
+  max-evidence-chars: 800
+  requester-id: system-eval
 
 search:
   hybrid:

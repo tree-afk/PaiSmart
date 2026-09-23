@@ -244,7 +244,14 @@ public class AgentToolRegistry {
         return schema;
     }
 
-    private String formatSearchResults(List<SearchResult> results) {
+    /**
+     * 检索片段在提示词里的统一格式（search_knowledge 工具结果，离线评测的生成环节也复用这一格式）
+     */
+    public static String formatSearchResults(List<SearchResult> results) {
+        return formatSearchResults(results, 1);
+    }
+
+    public static String formatSearchResults(List<SearchResult> results, int firstReferenceNumber) {
         if (results == null || results.isEmpty()) {
             return "未检索到相关知识库片段。";
         }
@@ -255,7 +262,7 @@ public class AgentToolRegistry {
                 .append("片段没有覆盖的内容明确说明资料中没有，不要为缺乏依据的句子硬凑来源编号。");
         for (int i = 0; i < results.size(); i++) {
             SearchResult result = results.get(i);
-            output.append("\n\n[").append(i + 1).append("] ");
+            output.append("\n\n[").append(firstReferenceNumber + i).append("] ");
             if (result.getFileName() != null && !result.getFileName().isBlank()) {
                 output.append(result.getFileName()).append(" ");
             }
@@ -320,7 +327,7 @@ public class AgentToolRegistry {
         return Math.max(min, Math.min(max, value));
     }
 
-    private String limitText(String text, int maxChars) {
+    private static String limitText(String text, int maxChars) {
         if (text == null) {
             return "";
         }

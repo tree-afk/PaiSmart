@@ -232,7 +232,7 @@ public class HybridSearchService {
     /**
      * 权限过滤：自己的文档 OR 公开文档 OR 组织标签命中（含层级继承后的有效标签）
      */
-    static Query buildPermissionFilter(String userDbId, List<String> userEffectiveTags) {
+    public static Query buildPermissionFilter(String userDbId, List<String> userEffectiveTags) {
         return Query.of(q -> q.bool(b -> {
             b.should(s -> s.term(t -> t.field("userId").value(userDbId)));
             b.should(s -> s.term(t -> t.field("public").value(true)));

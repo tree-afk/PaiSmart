@@ -4,6 +4,7 @@ import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
+import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
@@ -19,6 +20,7 @@ import org.apache.tika.exception.TikaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -96,6 +98,9 @@ public class DocumentService {
 
     @Autowired
     private KafkaConfig kafkaConfig;
+
+    @Autowired(required = false)
+    private ApplicationEventPublisher eventPublisher;
 
     /**
      * 删除文档及其相关数据
@@ -221,6 +226,7 @@ public class DocumentService {
                     requesterId
             );
             markVectorizationCompleted(fileUpload, result);
+            publishVectorized(fileMd5);
 
             logger.info(
                     "文档索引重建完成: fileMd5={}, actualTokens={}, actualChunkCount={}",
@@ -237,6 +243,20 @@ public class DocumentService {
             markVectorizationFailed(fileUpload, e);
             logger.error("重建文档索引失败: {}", fileMd5, e);
             throw new RuntimeException("重建文档索引失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 通知冲突检测等后置任务；监听方在事务提交后异步执行，这里的异常不能影响重建结果
+     */
+    private void publishVectorized(String fileMd5) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new DocumentVectorizedEvent(fileMd5));
+        } catch (Exception e) {
+            logger.warn("发布向量化完成事件失败，忽略: fileMd5={}, error={}", fileMd5, e.getMessage());
         }
     }
 

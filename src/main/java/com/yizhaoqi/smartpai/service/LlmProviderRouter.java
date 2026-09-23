@@ -106,6 +106,18 @@ public class LlmProviderRouter {
         }
     }
 
+    /**
+     * 单轮 RAG 问答消息：与 streamResponse 相同的 system 规则 + 检索片段块（ai.prompt.ref-start / ref-end），不带历史。
+     * 配合 {@link #completeReActTurn} 且不传工具，即为非流式的"检索后直接回答"调用（离线评测使用）。
+     */
+    public List<Map<String, Object>> buildRagMessages(String userMessage, String context) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        for (Map<String, String> message : buildMessages(userMessage, context, List.of())) {
+            messages.add(new LinkedHashMap<>(message));
+        }
+        return messages;
+    }
+
     public List<Map<String, Object>> buildReActMessages(String userMessage,
                                                         String context,
                                                         List<Map<String, String>> history) {

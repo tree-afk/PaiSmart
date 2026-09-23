@@ -1,0 +1,37 @@
+package com.yizhaoqi.smartpai.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+/**
+ * 离线 RAG 评测配置：检索看 Recall@K / MRR，生成看 LLM-as-a-judge 打分，按比例抽样给人工复核。
+ */
+@Data
+@Component
+@ConfigurationProperties(prefix = "eval")
+public class RagEvalProperties {
+
+    /** 评测报告（JSON）输出目录 */
+    private String outputDir = "eval-reports";
+    /** 通过 datasetPath 指定数据集时只允许读取该目录下的文件；也可以用 classpath:eval/xxx.jsonl */
+    private String datasetDir = "eval-datasets";
+    /** 随机抽样给人工复核的比例（评委输出解析失败的用例总是需要复核） */
+    private double humanReviewSampleRate = 0.1;
+    /** 抽样随机种子，为空时每次随机；固定种子便于两次评测抽到同一批用例 */
+    private Long randomSeed;
+    private int defaultTopK = 5;
+    private int maxTopK = 20;
+    /** 单次评测最多用例数 */
+    private int maxCases = 500;
+    /** 生成回答的最大输出 tokens */
+    private int generationMaxTokens = 1500;
+    /** 评委模型的最大输出 tokens */
+    private int judgeMaxTokens = 300;
+    private int generationTimeoutSeconds = 90;
+    private int judgeTimeoutSeconds = 60;
+    /** 送给评委的每条检索证据最大字符数 */
+    private int maxEvidenceChars = 800;
+    /** 生成和评委调用使用的请求方 ID，以 system 开头可豁免用户配额；检索仍以发起评测的管理员身份执行 */
+    private String requesterId = "system-eval";
+}
