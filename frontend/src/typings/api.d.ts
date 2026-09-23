@@ -399,13 +399,17 @@ declare namespace Api {
       fileName: string;
       pageNumber?: number | null;
       anchorText?: string | null;
-      retrievalMode?: 'HYBRID' | 'TEXT_ONLY' | null;
+      /** HYBRID：双路召回 + rerank；HYBRID_RRF：rerank 不可用时按 RRF 排序兜底；TEXT_ONLY：embedding 失败降级 */
+      retrievalMode?: 'HYBRID' | 'HYBRID_RRF' | 'TEXT_ONLY' | null;
       retrievalLabel?: string | null;
       retrievalQuery?: string | null;
       matchedChunkText?: string | null;
       evidenceSnippet?: string | null;
       score?: number | null;
       chunkId?: number | null;
+      /** 引用事后校验结论，未开启校验时为空；SUSPICIOUS 表示片段无法支撑引用它的句子 */
+      citationStatus?: 'SUPPORTED' | 'SUSPICIOUS' | null;
+      citationReason?: string | null;
     }
 
     interface Input {

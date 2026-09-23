@@ -134,6 +134,31 @@ class ModelProviderConfigServiceTest {
     }
 
     @Test
+    void shouldActivateEmbeddingProviderAfterReindexKeepingStoredKeys() {
+        ModelProviderConfigService.UpdateScopeRequest saveTarget = new ModelProviderConfigService.UpdateScopeRequest(
+                "aliyun",
+                List.of(
+                        new ModelProviderConfigService.ProviderUpsertRequest("aliyun", "https://dashscope.aliyuncs.com/compatible-mode/v1", "text-embedding-v4", "", 2048, true),
+                        new ModelProviderConfigService.ProviderUpsertRequest("zhipu", "https://open.bigmodel.cn/api/paas/v4", "embedding-3", "sk-zhipu", 1024, true)
+                )
+        );
+        service.updateScope(ModelProviderConfigService.SCOPE_EMBEDDING, saveTarget, "admin");
+        ModelProviderConfigService.ActiveProviderView target =
+                service.getProvider(ModelProviderConfigService.SCOPE_EMBEDDING, "zhipu");
+        assertEquals("sk-zhipu", target.apiKey(), "未激活的 provider 也能取到配置供重建使用");
+
+        service.activateEmbeddingProviderAfterReindex("zhipu", "reindex-job");
+
+        ModelProviderConfigService.ActiveProviderView active =
+                service.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
+        assertEquals("zhipu", active.provider());
+        assertEquals(1024, active.dimension());
+        assertEquals("sk-zhipu", active.apiKey());
+        assertEquals("sk-default-embedding",
+                service.getProvider(ModelProviderConfigService.SCOPE_EMBEDDING, "aliyun").apiKey());
+    }
+
+    @Test
     void shouldReuseStoredApiKeyWhenTestingConnectionWithBlankInput() throws Exception {
         AtomicReference<String> authorizationHeader = new AtomicReference<>();
         AtomicReference<String> requestPath = new AtomicReference<>();

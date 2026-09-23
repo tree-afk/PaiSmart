@@ -88,10 +88,13 @@ function run() {
   echo "启动脚本：==========="
   echo "当前 Profile: ${SPRING_PROFILES_ACTIVE:-prod}"
   echo "Java 版本：$($JAVA_HOME/bin/java -version 2>&1 | head -n 1)"
-  echo "JVM 参数：-Xms${JAVA_XMS:-1g} -Xmx${JAVA_XMX:-1g}"
+  echo "JVM 参数：-Xms${JAVA_XMS:-1g} -Xmx${JAVA_XMX:-1g} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${HEAP_DUMP_PATH:-./logs}"
   echo "==========="
 
   # ms 堆大小  mx 最大堆大小  mn 新生代大小
+  # HeapDumpOnOutOfMemoryError：真出了 OOM 时自动生成 .hprof 堆转储，定位是哪个对象撑爆了内存
+  # ExitOnOutOfMemoryError：OOM 后直接退出，由外部守护重启，避免进程处于半死状态
+  # G1PeriodicGCInterval：空闲时也定期 GC，让堆使用率及时回落，文件处理背压（暂停 Kafka 消费）才能尽快恢复
   nohup $JAVA_HOME/bin/java \
     -server \
     -Dspring.devtools.restart.enabled=false \
@@ -100,6 +103,10 @@ function run() {
     -Xmn${JAVA_XMN:-256m} \
     -XX:NativeMemoryTracking=detail \
     -XX:-OmitStackTraceInFastThrow \
+    -XX:+HeapDumpOnOutOfMemoryError \
+    -XX:HeapDumpPath=${HEAP_DUMP_PATH:-./logs} \
+    -XX:+ExitOnOutOfMemoryError \
+    -XX:G1PeriodicGCInterval=${G1_PERIODIC_GC_INTERVAL_MS:30000} \
     -jar ${JAR_NAME} > /dev/null 2>&1 &
 
   echo $! 1> pid.log

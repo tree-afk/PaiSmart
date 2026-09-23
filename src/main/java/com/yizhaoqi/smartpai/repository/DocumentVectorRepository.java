@@ -1,6 +1,8 @@
 package com.yizhaoqi.smartpai.repository;
 
 import com.yizhaoqi.smartpai.model.DocumentVector;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -12,6 +14,9 @@ public interface DocumentVectorRepository extends JpaRepository<DocumentVector, 
     List<DocumentVector> findByFileMd5(String fileMd5); // 查询某文件的所有分块
 
     List<DocumentVector> findByFileMd5OrderByChunkIdAsc(String fileMd5); // 按分块顺序查询某文件的所有分块
+
+    // 分页读取分块，向量化时一批一批处理，不把整份文件的分块一次性读进内存
+    Slice<DocumentVector> findByFileMd5OrderByChunkIdAsc(String fileMd5, Pageable pageable);
 
     long countByFileMd5(String fileMd5);
 

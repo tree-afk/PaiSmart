@@ -2,6 +2,8 @@ package com.yizhaoqi.smartpai.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.yizhaoqi.smartpai.service.citation.CitationVerdict;
+import com.yizhaoqi.smartpai.service.citation.CitationVerificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
@@ -56,6 +58,7 @@ public class ChatHandler {
     private final ChatGenerationStateService chatGenerationStateService;
     private final ChatSessionRegistry chatSessionRegistry;
     private final AgentToolRegistry agentToolRegistry;
+    private final CitationVerificationService citationVerificationService;
     private final ThreadPoolTaskExecutor chatMonitorExecutor;
     private final ObjectMapper objectMapper;
     
@@ -80,6 +83,7 @@ public class ChatHandler {
                       ChatGenerationStateService chatGenerationStateService,
                       ChatSessionRegistry chatSessionRegistry,
                       AgentToolRegistry agentToolRegistry,
+                      CitationVerificationService citationVerificationService,
                       ObjectMapper objectMapper,
                       @Qualifier("chatMonitorExecutor") ThreadPoolTaskExecutor chatMonitorExecutor) {
         this.redisTemplate = redisTemplate;
@@ -90,6 +94,7 @@ public class ChatHandler {
         this.chatGenerationStateService = chatGenerationStateService;
         this.chatSessionRegistry = chatSessionRegistry;
         this.agentToolRegistry = agentToolRegistry;
+        this.citationVerificationService = citationVerificationService;
         this.objectMapper = objectMapper;
         this.chatMonitorExecutor = chatMonitorExecutor;
     }
@@ -489,7 +494,8 @@ public class ChatHandler {
                 completion != null && completion.finishReason() != null ? completion.finishReason() : "unknown",
                 completion != null ? completion.promptTokens() : 0,
                 completion != null ? completion.completionTokens() : 0);
-        Map<Integer, ReferenceInfo> referenceMappings = generationReferenceMappings.get(generationId);
+        Map<Integer, ReferenceInfo> referenceMappings = verifyCitations(
+                userId, generationId, completeResponse, generationReferenceMappings.get(generationId));
         // 先把消息事务性地落 MySQL；只有 MySQL 成功后才写 Redis 短期会话历史，
         // 否则两个数据源会出现一边有记录、一边没有的不一致状态。
         boolean persisted = persistConversation(userId, userMessage, completeResponse, conversationId, referenceMappings);
@@ -504,6 +510,29 @@ public class ChatHandler {
         logger.info("对话存储信息 - Redis键: {}, 值: {}", "user:" + userId + ":current_conversation", conversationId);
         cleanupGenerationState(generationId, null);
         logger.info("消息处理完成，用户ID: {}", userId);
+    }
+
+    /**
+     * 引用事后校验（ai.citation-verification.enabled）：不被片段支撑的引用标记为 SUSPICIOUS，前端降低展示优先级
+     */
+    private Map<Integer, ReferenceInfo> verifyCitations(String userId, String generationId, String answer,
+                                                        Map<Integer, ReferenceInfo> referenceMappings) {
+        if (referenceMappings == null || referenceMappings.isEmpty() || !citationVerificationService.isEnabled()) {
+            return referenceMappings;
+        }
+        Map<Integer, String> referenceTexts = new HashMap<>();
+        referenceMappings.forEach((number, detail) -> referenceTexts.put(number, detail.matchedChunkText()));
+        Map<Integer, CitationVerdict> verdicts = citationVerificationService.verify(userId, answer, referenceTexts);
+        if (verdicts.isEmpty()) {
+            return referenceMappings;
+        }
+        Map<Integer, ReferenceInfo> verified = new HashMap<>();
+        referenceMappings.forEach((number, detail) -> {
+            CitationVerdict verdict = verdicts.get(number);
+            verified.put(number, verdict == null ? detail : detail.withCitation(verdict.status().name(), verdict.reason()));
+        });
+        generationReferenceMappings.put(generationId, verified);
+        return verified;
     }
 
     private boolean persistConversation(String userId, String userMessage, String completeResponse, String conversationId,
@@ -702,6 +731,8 @@ public class ChatHandler {
             item.put("evidenceSnippet", detail.evidenceSnippet());
             item.put("score", detail.score());
             item.put("chunkId", detail.chunkId());
+            item.put("citationStatus", detail.citationStatus());
+            item.put("citationReason", detail.citationReason());
             serialized.put(String.valueOf(entry.getKey()), item);
         }
         return serialized;
@@ -936,7 +967,9 @@ public class ChatHandler {
                     (String) item.get("matchedChunkText"),
                     (String) item.get("evidenceSnippet"),
                     item.get("score") instanceof Number number ? number.doubleValue() : null,
-                    item.get("chunkId") instanceof Number number ? number.intValue() : null
+                    item.get("chunkId") instanceof Number number ? number.intValue() : null,
+                    (String) item.get("citationStatus"),
+                    (String) item.get("citationReason")
             ));
         }
         return referenceMap;
@@ -960,13 +993,18 @@ public class ChatHandler {
                 matchedChunkText,
                 evidenceSnippet,
                 result.getScore(),
-                result.getChunkId()
+                result.getChunkId(),
+                null,
+                null
         );
     }
 
     private String buildRetrievalLabel(String retrievalMode) {
         if ("TEXT_ONLY".equalsIgnoreCase(retrievalMode)) {
             return "关键词召回";
+        }
+        if ("HYBRID_RRF".equalsIgnoreCase(retrievalMode)) {
+            return "混合召回（RRF 融合排序，未经 rerank 精排）";
         }
         return "混合召回（语义相关 + 关键词命中）";
     }
@@ -1020,8 +1058,15 @@ public class ChatHandler {
             String matchedChunkText,
             String evidenceSnippet,
             Double score,
-            Integer chunkId
+            Integer chunkId,
+            /* 引用校验结论：SUPPORTED / SUSPICIOUS，未开启或未校验时为 null */
+            String citationStatus,
+            String citationReason
     ) {
+        public ReferenceInfo withCitation(String status, String reason) {
+            return new ReferenceInfo(fileMd5, fileName, pageNumber, anchorText, retrievalMode, retrievalLabel,
+                    retrievalQuery, matchedChunkText, evidenceSnippet, score, chunkId, status, reason);
+        }
     }
 
 }

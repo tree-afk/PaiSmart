@@ -207,6 +207,9 @@ const fallbackRetrievalLabel = computed(() => {
   if (props.retrievalMode === 'HYBRID') {
     return '混合召回（语义相关 + 关键词）';
   }
+  if (props.retrievalMode === 'HYBRID_RRF') {
+    return '混合召回（RRF 融合排序，未经 rerank）';
+  }
   return '';
 });
 const resolvedHighlightAnchor = computed(() => props.anchorText || '');

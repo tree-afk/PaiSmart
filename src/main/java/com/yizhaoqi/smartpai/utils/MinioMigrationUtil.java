@@ -169,7 +169,7 @@ public class MinioMigrationUtil {
             // 1. 清空 ElasticSearch
             logger.info("清空 ElasticSearch 索引...");
             DeleteByQueryRequest deleteRequest = DeleteByQueryRequest.of(d -> d
-                .index("knowledge_base")
+                .index(com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames.ALIAS)
                 .query(Query.of(q -> q.matchAll(m -> m)))
             );
             esClient.deleteByQuery(deleteRequest);

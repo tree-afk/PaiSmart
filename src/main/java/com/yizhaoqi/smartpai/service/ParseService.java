@@ -2,6 +2,7 @@ package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.parse.ParseConcurrencyLimiter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.tika.exception.TikaException;
@@ -59,8 +60,9 @@ public class ParseService {
     @Value("${file.parsing.buffer-size:8192}")
     private int bufferSize;
     
-    @Value("${file.parsing.max-memory-threshold:0.8}")
-    private double maxMemoryThreshold;
+    // 并发解析闸门；堆内存超阈值时的背压由 FileProcessingBackpressureMonitor 暂停 Kafka 消费完成
+    @Autowired
+    private ParseConcurrencyLimiter parseConcurrencyLimiter = ParseConcurrencyLimiter.unbounded();
 
     @Value("${file.parsing.pdf.engine:liteparse}")
     private String pdfParsingEngine;
@@ -122,9 +124,8 @@ public class ParseService {
         logger.info("开始流式解析文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
                 fileMd5, userId, orgTag, isPublic);
         
-        checkMemoryThreshold();
-
-        try (BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
+        try (ParseConcurrencyLimiter.Permit ignored = parseConcurrencyLimiter.acquire("parse:" + fileMd5);
+             BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
             if (isPdfDocument(bufferedStream)) {
                 parsePdfAndSave(fileMd5, bufferedStream, userId, orgTag, isPublic);
                 logger.info("PDF 文件 LiteParse 页级解析和入库完成，fileMd5: {}", fileMd5);
@@ -159,9 +160,8 @@ public class ParseService {
 
     public EmbeddingEstimate estimateEmbeddingUsage(InputStream fileStream) throws IOException, TikaException {
         logger.info("开始估算文档 Embedding Token");
-        checkMemoryThreshold();
-
-        try (BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
+        try (ParseConcurrencyLimiter.Permit ignored = parseConcurrencyLimiter.acquire("estimate");
+             BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
             if (isPdfDocument(bufferedStream)) {
                 return estimatePdfEmbeddingUsage(bufferedStream);
             }
@@ -178,30 +178,6 @@ public class ParseService {
         }
     }
 
-    private void checkMemoryThreshold() {
-        Runtime runtime = Runtime.getRuntime();
-        long maxMemory = runtime.maxMemory();
-        long totalMemory = runtime.totalMemory();
-        long freeMemory = runtime.freeMemory();
-        long usedMemory = totalMemory - freeMemory;
-        
-        double memoryUsage = (double) usedMemory / maxMemory;
-        
-        if (memoryUsage > maxMemoryThreshold) {
-            logger.warn("内存使用率过高: {:.2f}%, 触发垃圾回收", memoryUsage * 100);
-            System.gc();
-            
-            // 重新检查
-            usedMemory = runtime.totalMemory() - runtime.freeMemory();
-            memoryUsage = (double) usedMemory / maxMemory;
-            
-            if (memoryUsage > maxMemoryThreshold) {
-                throw new RuntimeException("内存不足，无法处理大文件。当前使用率: " + 
-                    String.format("%.2f%%", memoryUsage * 100));
-            }
-        }
-    }
-    
     /**
      * 内部流式内容处理器，实现了父子文档切分策略的核心逻辑。
      * Tika解析器会调用characters方法，当累积的文本达到"父块"大小时，
