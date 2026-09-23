@@ -4,6 +4,7 @@ import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
+import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
@@ -194,7 +195,8 @@ public class DocumentService {
 
         try (InputStream fileStream = uploadService.getMergedFileStream(fileMd5)) {
             try {
-                elasticsearchService.deleteByFileMd5(fileMd5);
+                // 只清理线上别名，保留旧版本索引中的数据用于回滚
+                elasticsearchService.deleteByFileMd5(KnowledgeIndexNames.ALIAS, fileMd5);
                 logger.info("重建前已清理 Elasticsearch 文档: {}", fileMd5);
             } catch (Exception e) {
                 logger.warn("重建前清理 Elasticsearch 失败: fileMd5={}, error={}", fileMd5, e.getMessage());

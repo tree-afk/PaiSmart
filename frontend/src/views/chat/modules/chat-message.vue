@@ -145,10 +145,11 @@ function createSourceLink(
   fileName: string,
   extras?: { fileMd5?: string; pageNumber?: number; displayName?: string }
 ): string {
-  const linkClass = 'source-file-link';
   const trimmedFileName = fileName.trim();
   const fileId = `source-file-${sourceFiles.value.length}`;
   const referenceNumber = parseInt(sourceNum, 10);
+  const suspicious = props.msg.referenceMappings?.[sourceNum]?.citationStatus === 'SUSPICIOUS';
+  const linkClass = suspicious ? 'source-file-link source-file-link--suspicious' : 'source-file-link';
 
   sourceFiles.value.push({
     fileName: trimmedFileName,
@@ -158,7 +159,11 @@ function createSourceLink(
     pageNumber: extras?.pageNumber
   });
 
-  return `来源#${sourceNum}: <span class="${linkClass}" data-file-id="${fileId}">${extras?.displayName || trimmedFileName}</span>`;
+  const link = `来源#${sourceNum}: <span class="${linkClass}" data-file-id="${fileId}">${extras?.displayName || trimmedFileName}</span>`;
+  // 引用校验判为不支撑的来源降低展示优先级，并提示用户自行核实
+  return suspicious
+    ? `${link}<span class="citation-suspicious-badge" title="引用校验：该片段可能无法支撑这句话">待核实</span>`
+    : link;
 }
 
 // 处理来源文件链接的函数
@@ -450,6 +455,22 @@ async function handleSourceFileClick(fileInfo: {
   &:active {
     color: #096dd9;
   }
+}
+
+:deep(.source-file-link--suspicious) {
+  color: rgb(var(--text-color-2));
+  text-decoration: underline dashed;
+  opacity: 0.7;
+}
+
+:deep(.citation-suspicious-badge) {
+  margin-left: 4px;
+  border: 1px solid #faad14;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #d48806;
 }
 
 .tool-event {

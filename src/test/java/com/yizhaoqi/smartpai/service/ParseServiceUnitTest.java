@@ -26,7 +26,6 @@ class ParseServiceUnitTest {
         ReflectionTestUtils.setField(parseService, "overlapSize", 0);
         ReflectionTestUtils.setField(parseService, "minChunkSize", 1);
         ReflectionTestUtils.setField(parseService, "bufferSize", 8192);
-        ReflectionTestUtils.setField(parseService, "maxMemoryThreshold", 0.8);
         ReflectionTestUtils.setField(parseService, "aliyunOcrEnabled", false);
         ReflectionTestUtils.setField(parseService, "aliyunOcrCallbackToken", "");
         ReflectionTestUtils.setField(parseService, "serverPort", 8081);

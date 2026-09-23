@@ -9,6 +9,7 @@ import com.yizhaoqi.smartpai.client.DeepSeekClient;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
+import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -24,7 +25,7 @@ import java.util.function.Consumer;
 @Service
 public class AgentToolRegistry {
 
-    private static final String KNOWLEDGE_INDEX = "knowledge_base";
+    private static final String KNOWLEDGE_INDEX = KnowledgeIndexNames.ALIAS;
     private static final int DEFAULT_TOP_K = 5;
     private static final int MAX_SEARCH_DOCS = 20;
 
@@ -150,7 +151,8 @@ public class AgentToolRegistry {
                                                       Consumer<String> onChunk) {
         try {
             IndicesStatsResponse statsResponse = elasticsearchClient.indices().stats(s -> s.index(KNOWLEDGE_INDEX));
-            IndicesStats indexStats = statsResponse.indices().get(KNOWLEDGE_INDEX);
+            // 别名下 stats 按物理索引名返回，取别名当前指向的那一个
+            IndicesStats indexStats = statsResponse.indices().values().stream().findFirst().orElse(null);
             DocStats docStats = indexStats != null && indexStats.total() != null ? indexStats.total().docs() : null;
             StoreStats storeStats = indexStats != null && indexStats.total() != null ? indexStats.total().store() : null;
 
@@ -249,7 +251,8 @@ public class AgentToolRegistry {
 
         StringBuilder output = new StringBuilder("检索到 ").append(results.size()).append(" 个知识库片段。")
                 .append("请基于这些片段回答用户问题；不得声称知识库暂无相关信息。")
-                .append("如果片段信息不足，请说明“基于已检索片段只能确认……”并标注来源编号。");
+                .append("如果片段信息不足，请说明“基于已检索片段只能确认……”并标注来源编号；")
+                .append("片段没有覆盖的内容明确说明资料中没有，不要为缺乏依据的句子硬凑来源编号。");
         for (int i = 0; i < results.size(); i++) {
             SearchResult result = results.get(i);
             output.append("\n\n[").append(i + 1).append("] ");

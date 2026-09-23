@@ -1,18 +1,20 @@
 package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
-import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.entity.EsDocument;
-import com.yizhaoqi.smartpai.entity.TextChunk;
+import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
-import java.util.stream.IntStream;
 
 // 向量化服务类
 @Service
@@ -29,6 +31,13 @@ public class VectorizationService {
     @Autowired
     private DocumentVectorRepository documentVectorRepository;
 
+    @Autowired
+    private ModelProviderConfigService modelProviderConfigService;
+
+    // 每批分块数：分页读分块 → 调 embedding → 立即写 ES，整份文件的向量不在内存里攒着
+    @Value("${embedding.api.batch-size:10}")
+    private int batchSize = 10;
+
     /**
      * 执行向量化操作
      * @param fileMd5 文件指纹
@@ -44,56 +53,42 @@ public class VectorizationService {
         vectorizeWithUsage(fileMd5, userId, orgTag, isPublic, requesterId);
     }
 
+    /**
+     * 按批向量化并写入 Elasticsearch。
+     * 文档 ID 为 fileMd5_chunkId：中途失败后 Kafka 重试会覆盖已写入的批次，不会产生重复文档。
+     */
     public VectorizationUsageResult vectorizeWithUsage(String fileMd5, String userId, String orgTag, boolean isPublic, String requesterId) {
         try {
-            logger.info("开始向量化文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}", 
+            logger.info("开始向量化文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
                        fileMd5, userId, orgTag, isPublic);
-                       
-            // 获取文件分块内容
-            List<TextChunk> chunks = fetchTextChunks(fileMd5);
-            if (chunks == null || chunks.isEmpty()) {
-                logger.warn("未找到分块内容，fileMd5: {}", fileMd5);
-                return new VectorizationUsageResult(0, 0, embeddingClient.currentModelVersion());
+
+            // 整份文件固定使用同一个模型，避免处理中途切换激活模型导致同一文件混用两套向量
+            ModelProviderConfigService.ActiveProviderView provider =
+                    modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
+            String modelVersion = EmbeddingClient.modelVersionOf(provider);
+
+            int totalTokens = 0;
+            int totalChunks = 0;
+            Pageable page = PageRequest.of(0, Math.max(batchSize, 1));
+            while (true) {
+                Slice<DocumentVector> slice = documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5, page);
+                List<DocumentVector> chunks = slice.getContent();
+                if (!chunks.isEmpty()) {
+                    totalTokens += embedAndIndexBatch(fileMd5, chunks, userId, orgTag, isPublic, requesterId, provider, modelVersion);
+                    totalChunks += chunks.size();
+                }
+                if (!slice.hasNext()) {
+                    break;
+                }
+                page = slice.nextPageable();
             }
 
-            // 提取文本内容
-            List<String> texts = chunks.stream()
-                    .map(TextChunk::getContent)
-                    .toList();
-
-            // 调用外部模型生成向量
-            EmbeddingClient.EmbeddingUsageResult embeddingResult = embeddingClient.embedWithUsage(
-                    texts,
-                    requesterId,
-                    EmbeddingClient.UsageType.UPLOAD
-            );
-            List<float[]> vectors = embeddingResult.vectors();
-
-            // 构建 Elasticsearch 文档并存储
-            List<EsDocument> esDocuments = IntStream.range(0, chunks.size())
-                    .mapToObj(i -> new EsDocument(
-                            UUID.randomUUID().toString(),
-                            fileMd5,
-                            chunks.get(i).getChunkId(),
-                            chunks.get(i).getContent(),
-                            chunks.get(i).getPageNumber(),
-                            chunks.get(i).getAnchorText(),
-                            vectors.get(i),
-                            embeddingResult.modelVersion(),
-                            userId,
-                            orgTag,
-                            isPublic
-                    ))
-                    .toList();
-
-            elasticsearchService.bulkIndex(esDocuments); // 批量存储到 Elasticsearch
-
-            logger.info("向量化完成，fileMd5: {}", fileMd5);
-            return new VectorizationUsageResult(
-                    embeddingResult.totalTokens(),
-                    chunks.size(),
-                    embeddingResult.modelVersion()
-            );
+            if (totalChunks == 0) {
+                logger.warn("未找到分块内容，fileMd5: {}", fileMd5);
+            } else {
+                logger.info("向量化完成，fileMd5: {}, chunks: {}, tokens: {}", fileMd5, totalChunks, totalTokens);
+            }
+            return new VectorizationUsageResult(totalTokens, totalChunks, modelVersion);
         } catch (Exception e) {
             logger.error("向量化失败，fileMd5: {}", fileMd5, e);
             String message = e.getMessage();
@@ -103,27 +98,43 @@ public class VectorizationService {
             throw new RuntimeException("向量化失败: " + message, e);
         }
     }
-    
 
-    /**
-     * 获取文件分块内容
-     * @param fileMd5 文件指纹
-     * @return 分块内容列表
-     */
-    // 从数据库获取分块内容
-    private List<TextChunk> fetchTextChunks(String fileMd5) {
-        // 调用 Repository 查询数据
-        List<DocumentVector> vectors = documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5);
+    private int embedAndIndexBatch(String fileMd5,
+                                   List<DocumentVector> chunks,
+                                   String userId,
+                                   String orgTag,
+                                   boolean isPublic,
+                                   String requesterId,
+                                   ModelProviderConfigService.ActiveProviderView provider,
+                                   String modelVersion) {
+        List<String> texts = chunks.stream().map(DocumentVector::getTextContent).toList();
+        EmbeddingClient.EmbeddingUsageResult embeddingResult = embeddingClient.embedWithProvider(
+                texts, requesterId, EmbeddingClient.UsageType.UPLOAD, provider);
+        List<float[]> vectors = embeddingResult.vectors();
+        if (vectors.size() != chunks.size()) {
+            throw new IllegalStateException(String.format("embedding 返回数量不一致: expected=%d, actual=%d",
+                    chunks.size(), vectors.size()));
+        }
 
-        // 转换为 TextChunk 列表
-        return vectors.stream()
-                .map(vector -> new TextChunk(
-                        vector.getChunkId(),
-                        vector.getTextContent(),
-                        vector.getPageNumber(),
-                        vector.getAnchorText()
-                ))
-                .toList();
+        List<EsDocument> esDocuments = new ArrayList<>(chunks.size());
+        for (int i = 0; i < chunks.size(); i++) {
+            DocumentVector chunk = chunks.get(i);
+            esDocuments.add(new EsDocument(
+                    fileMd5 + "_" + chunk.getChunkId(),
+                    fileMd5,
+                    chunk.getChunkId(),
+                    chunk.getTextContent(),
+                    chunk.getPageNumber(),
+                    chunk.getAnchorText(),
+                    vectors.get(i),
+                    modelVersion,
+                    userId,
+                    orgTag,
+                    isPublic
+            ));
+        }
+        elasticsearchService.bulkIndex(esDocuments);
+        return embeddingResult.totalTokens();
     }
 
     public record VectorizationUsageResult(int actualEmbeddingTokens, int actualChunkCount, String modelVersion) {

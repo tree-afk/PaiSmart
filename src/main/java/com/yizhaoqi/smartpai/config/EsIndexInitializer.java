@@ -1,26 +1,26 @@
 package com.yizhaoqi.smartpai.config;
 
-import co.elastic.clients.transport.endpoints.BooleanResponse;
+import com.yizhaoqi.smartpai.client.EmbeddingClient;
+import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
+import com.yizhaoqi.smartpai.service.index.KnowledgeIndexManager;
+import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
-import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch.indices.CreateIndexRequest;
-import co.elastic.clients.elasticsearch.indices.ExistsRequest;
 import org.apache.http.ConnectionClosedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Files;
-import java.nio.charset.StandardCharsets;
-import java.io.StringReader;
 import java.net.ConnectException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 
 // 确保在 BootstrapKnowledgeInitializer 之前进行初始化
 @Order(2)
@@ -30,11 +30,13 @@ public class EsIndexInitializer implements CommandLineRunner {
 
     private static final Logger logger = LoggerFactory.getLogger(EsIndexInitializer.class);
 
-    @Autowired
-    private ElasticsearchClient esClient;
+    private static final int DEFAULT_VECTOR_DIMS = 2048;
 
-    @Value("classpath:es-mappings/knowledge_base.json") // 加载 JSON 文件
-    private org.springframework.core.io.Resource mappingResource;
+    @Autowired
+    private KnowledgeIndexManager knowledgeIndexManager;
+
+    @Autowired
+    private ModelProviderConfigService modelProviderConfigService;
 
     @Value("${elasticsearch.host}")
     private String host;
@@ -51,7 +53,7 @@ public class EsIndexInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         try {
-            logger.info("正在初始化索引 'knowledge_base'... endpoint={}://{}:{}, username={}",
+            logger.info("正在初始化知识库索引 '{}'... endpoint={}://{}:{}, username={}", KnowledgeIndexNames.ALIAS,
                     scheme, host, port, maskUsername(username));
             initializeIndex();
         } catch (Exception exception) {
@@ -76,36 +78,37 @@ public class EsIndexInitializer implements CommandLineRunner {
     }
 
     /**
-     * 初始化索引的核心逻辑
-     * @throws Exception
+     * 初始化索引的核心逻辑：业务读写别名 knowledge_base，别名指向按 embedding 模型版本命名的物理索引
      */
     private void initializeIndex() throws Exception {
-        // 检查索引是否存在
-        BooleanResponse existsResponse = esClient.indices().exists(ExistsRequest.of(e -> e.index("knowledge_base")));
-        if (!existsResponse.value()) {
-            createIndex();
-        } else {
-            logger.info("索引 'knowledge_base' 已存在");
+        Optional<String> aliasTarget = knowledgeIndexManager.currentAliasTarget();
+        if (aliasTarget.isPresent()) {
+            logger.info("知识库别名 '{}' 已存在，指向索引 {}", KnowledgeIndexNames.ALIAS, aliasTarget.get());
+            return;
         }
+        if (knowledgeIndexManager.hasLegacyConcreteIndex()) {
+            // 兼容旧版本：继续直接使用同名物理索引，第一次 embedding 重建切换时会备份并迁移为别名
+            logger.info("检测到旧版物理索引 '{}'，继续使用；下次 embedding 重建时会迁移为别名", KnowledgeIndexNames.ALIAS);
+            return;
+        }
+        createIndex();
     }
 
     /**
-     * 创建索引
-     * @throws Exception
+     * 全新环境：按当前激活的 embedding 模型创建版本索引并挂上别名
      */
     private void createIndex() throws Exception {
-        // 读取 JSON 文件内容，使用 InputStream 方式支持 JAR 包内资源
-        String mappingJson;
-        try (var inputStream = mappingResource.getInputStream()) {
-            mappingJson = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        // 创建索引并应用映射
-        CreateIndexRequest createIndexRequest = CreateIndexRequest.of(c -> c
-                .index("knowledge_base") // 索引名称
-                .withJson(new StringReader(mappingJson)) // 使用 JSON 文件定义映射
-        );
-        esClient.indices().create(createIndexRequest);
-        logger.info("索引 'knowledge_base' 已创建");
+        ModelProviderConfigService.ActiveProviderView provider =
+                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
+        String modelVersion = EmbeddingClient.modelVersionOf(provider);
+        String index = KnowledgeIndexNames.versionedIndexName(modelVersion);
+        int dims = provider.dimension() != null ? provider.dimension() : DEFAULT_VECTOR_DIMS;
+        knowledgeIndexManager.createIndex(index, dims, Map.of(
+                KnowledgeIndexManager.META_PROVIDER, provider.provider(),
+                KnowledgeIndexManager.META_MODEL_VERSION, modelVersion,
+                KnowledgeIndexManager.META_CREATED_AT, Instant.now().toString()
+        ), true);
+        logger.info("索引 '{}' 已创建，并挂载别名 '{}'", index, KnowledgeIndexNames.ALIAS);
     }
 
     private String buildDiagnosticMessage(Exception exception) {

@@ -76,11 +76,40 @@ public class ModelProviderConfigService {
         return settings.providers().stream()
                 .filter(ProviderConfigView::active)
                 .findFirst()
-                .map(this::toActiveProvider)
+                .map(provider -> toActiveProvider(scope, provider))
                 .orElseThrow(() -> new CustomException("未找到激活的模型配置: " + scope, HttpStatus.INTERNAL_SERVER_ERROR));
     }
 
+    /**
+     * 按 provider 编码获取配置（不要求处于激活状态），供 embedding 重建索引使用目标模型
+     */
+    public ActiveProviderView getProvider(String scope, String providerCode) {
+        ScopeSettingsView settings = resolveScope(scope, currentSettings);
+        String normalized = normalizeProvider(providerCode);
+        return settings.providers().stream()
+                .filter(provider -> provider.provider().equals(normalized))
+                .findFirst()
+                .map(provider -> toActiveProvider(scope, provider))
+                .orElseThrow(() -> new CustomException("未找到模型配置: " + scope + "/" + providerCode, HttpStatus.BAD_REQUEST));
+    }
+
     public synchronized ScopeSettingsView updateScope(String scope, UpdateScopeRequest request, String updatedBy) {
+        return applyScopeUpdate(scope, request, updatedBy, false);
+    }
+
+    /**
+     * 新索引已用目标模型重建并切换别名后，同步切换激活的 embedding provider，
+     * 保证查询向量与索引向量来自同一个模型。只能由索引重建 / 回滚流程调用。
+     */
+    public synchronized ScopeSettingsView activateEmbeddingProviderAfterReindex(String providerCode, String updatedBy) {
+        ScopeSettingsView existing = resolveScope(SCOPE_EMBEDDING, currentSettings);
+        List<ProviderUpsertRequest> providers = existing.providers().stream()
+                .map(p -> new ProviderUpsertRequest(p.provider(), p.apiBaseUrl(), p.model(), null, p.dimension(), p.enabled()))
+                .toList();
+        return applyScopeUpdate(SCOPE_EMBEDDING, new UpdateScopeRequest(normalizeProvider(providerCode), providers), updatedBy, true);
+    }
+
+    private ScopeSettingsView applyScopeUpdate(String scope, UpdateScopeRequest request, String updatedBy, boolean reindexCompleted) {
         String normalizedScope = normalizeScope(scope);
         validateUpdateRequest(normalizedScope, request);
 
@@ -89,10 +118,10 @@ public class ModelProviderConfigService {
         String currentActiveProvider = existingScope.activeProvider();
         ProviderConfigView currentActiveConfig = existingMap.get(currentActiveProvider);
 
-        if (SCOPE_EMBEDDING.equals(normalizedScope) && !Objects.equals(request.activeProvider(), currentActiveProvider)) {
+        if (!reindexCompleted && SCOPE_EMBEDDING.equals(normalizedScope) && !Objects.equals(request.activeProvider(), currentActiveProvider)) {
             ProviderUpsertRequest target = findProviderRequest(request.providers(), request.activeProvider());
             if (target != null && currentActiveConfig != null && requiresEmbeddingReindex(currentActiveConfig, target)) {
-                throw new CustomException("Embedding 模型切换需要重嵌入任务，当前版本不支持直接切换 active provider", HttpStatus.CONFLICT);
+                throw new CustomException("Embedding 模型切换需要重嵌入任务：请先保存目标 provider 配置，再调用 POST /api/v1/admin/knowledge-index/rebuild 重建索引，完成后会自动切换", HttpStatus.CONFLICT);
             }
         }
 
@@ -123,7 +152,7 @@ public class ModelProviderConfigService {
             entity.setEnabled(item.enabled() == null ? fallback.enabled() : item.enabled());
             entity.setActive(provider.equals(request.activeProvider()));
             entity.setUpdatedBy(updatedBy);
-            entity.setApiKeyCiphertext(resolveCiphertext(item.apiKey(), fallback));
+            entity.setApiKeyCiphertext(resolveCiphertext(normalizedScope, item.apiKey(), fallback));
             repository.save(entity);
             persistedMap.put(provider, entity);
         }
@@ -262,9 +291,10 @@ public class ModelProviderConfigService {
         return new ScopeSettingsView(defaults.scope(), activeProvider, providers);
     }
 
-    private ActiveProviderView toActiveProvider(ProviderConfigView provider) {
+    // 同一 provider 编码（如 zhipu）可能同时出现在 llm 和 embedding 两个 scope，必须按 scope 精确查找 Key
+    private ActiveProviderView toActiveProvider(String scope, ProviderConfigView provider) {
         String apiKey = null;
-        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(resolveScopeByProvider(provider.provider()), provider.provider());
+        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(normalizeScope(scope), provider.provider());
         if (persisted.isPresent()) {
             apiKey = secretCryptoService.decrypt(persisted.get().getApiKeyCiphertext());
         } else if ("deepseek".equals(provider.provider())) {
@@ -282,14 +312,6 @@ public class ModelProviderConfigService {
                 apiKey,
                 provider.dimension()
         );
-    }
-
-    private String resolveScopeByProvider(String provider) {
-        ScopeSettingsView llm = currentSettings.llm();
-        if (llm.providers().stream().anyMatch(item -> item.provider().equals(provider))) {
-            return SCOPE_LLM;
-        }
-        return SCOPE_EMBEDDING;
     }
 
     private boolean requiresEmbeddingReindex(ProviderConfigView current, ProviderUpsertRequest target) {
@@ -494,14 +516,14 @@ public class ModelProviderConfigService {
                 .orElse(provider);
     }
 
-    private String resolveCiphertext(String rawApiKey, ProviderConfigView fallback) {
+    private String resolveCiphertext(String scope, String rawApiKey, ProviderConfigView fallback) {
         if (rawApiKey != null && !rawApiKey.isBlank()) {
             return secretCryptoService.encrypt(rawApiKey.trim());
         }
         if (!fallback.hasApiKey()) {
             return null;
         }
-        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(resolveScopeByProvider(fallback.provider()), fallback.provider());
+        Optional<ModelProviderConfig> persisted = repository.findByConfigScopeAndProviderCode(scope, fallback.provider());
         return persisted.map(ModelProviderConfig::getApiKeyCiphertext)
                 .orElseGet(() -> {
                     if ("deepseek".equals(fallback.provider())) {

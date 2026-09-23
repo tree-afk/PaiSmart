@@ -38,7 +38,10 @@ public class FileProcessingConsumer {
         this.documentService = documentService;
     }
 
-    @KafkaListener(topics = "#{kafkaConfig.getFileProcessingTopic()}", groupId = "#{kafkaConfig.getFileProcessingGroupId()}")
+    // id 供 FileProcessingListenerGate 在堆内存背压 / 索引切换时暂停、恢复消费
+    @KafkaListener(id = FileProcessingListenerGate.LISTENER_ID,
+            topics = "#{kafkaConfig.getFileProcessingTopic()}",
+            groupId = "#{kafkaConfig.getFileProcessingGroupId()}")
     public void processTask(FileProcessingTask task) {
         log.info("Received task: {}", task);
         log.info("文件权限信息: userId={}, orgTag={}, isPublic={}", 

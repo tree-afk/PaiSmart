@@ -339,6 +339,12 @@ chmod +x launch.sh
 - `restart`：直接重启现有 jar
 - `status` / `logs`：查看进程状态和日志
 
+脚本默认带上以下 JVM 参数，自行编写启动命令或 Docker 镜像时也建议保留：
+
+- `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./logs`：发生 OOM 时自动生成堆转储文件，用来定位是哪个对象撑爆了内存（可用 `HEAP_DUMP_PATH` 覆盖目录）
+- `-XX:+ExitOnOutOfMemoryError`：OOM 后直接退出，交给外部守护进程重启
+- `-XX:G1PeriodicGCInterval=30000`：空闲时定期 GC，让文件处理背压（堆使用率超过 `file.parsing.max-memory-threshold` 时暂停 Kafka 消费）能及时恢复
+
 ### 6. 前端部署脚本
 
 `deploy-front.sh` 用于构建前端、打 zip 包、上传到服务器，并在远端替换 `/home/www/PaiSmart-Front/dist`。脚本会自动读取根目录 `.env` 中的部署配置。

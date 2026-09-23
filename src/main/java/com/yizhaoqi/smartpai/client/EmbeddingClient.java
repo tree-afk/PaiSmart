@@ -75,6 +75,18 @@ public class EmbeddingClient {
     }
 
     public EmbeddingUsageResult embedWithUsage(List<String> texts, String requesterId, UsageType usageType) {
+        return embedWithProvider(texts, requesterId, usageType,
+                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING));
+    }
+
+    /**
+     * 使用指定 provider 生成向量。embedding 模型升级重建索引时，新索引要用目标模型生成，
+     * 而线上查询仍用当前激活的模型，二者在切换别名之前必须并存。
+     */
+    public EmbeddingUsageResult embedWithProvider(List<String> texts,
+                                                  String requesterId,
+                                                  UsageType usageType,
+                                                  ModelProviderConfigService.ActiveProviderView provider) {
         try {
             String normalizedRequesterId = requesterId == null || requesterId.isBlank() ? "unknown" : requesterId;
             logger.info("开始生成向量，文本数量: {}", texts.size());
@@ -89,7 +101,7 @@ public class EmbeddingClient {
                         : rateLimitService.reserveEmbeddingUploadUsage(normalizedRequesterId, sub);
                 logger.debug("调用向量 API, 批次: {}-{} (size={})", start, end - 1, sub.size());
                 try {
-                    String response = callApiOnce(sub);
+                    String response = callApiOnce(sub, provider);
                     EmbeddingApiResponse parsedResponse = parseEmbeddingResponse(response, sub);
                     usageQuotaService.settleReservation(reservation, parsedResponse.totalTokens());
                     all.addAll(parsedResponse.vectors());
@@ -100,7 +112,7 @@ public class EmbeddingClient {
                 }
             }
             logger.info("成功生成向量，总数量: {}", all.size());
-            return new EmbeddingUsageResult(all, totalTokens, currentModelVersion());
+            return new EmbeddingUsageResult(all, totalTokens, modelVersionOf(provider));
         } catch (WebClientResponseException e) {
             // 提供详细的API响应错误信息
             logger.error("API调用失败 - 状态码: {}, 响应: {}, 请求头: {}",
@@ -119,8 +131,7 @@ public class EmbeddingClient {
         }
     }
 
-    private String callApiOnce(List<String> batch) {
-        ModelProviderConfigService.ActiveProviderView provider = modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
+    private String callApiOnce(List<String> batch, ModelProviderConfigService.ActiveProviderView provider) {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", provider.model());
         requestBody.put("input", batch);
@@ -182,7 +193,10 @@ public class EmbeddingClient {
     }
 
     public String currentModelVersion() {
-        ModelProviderConfigService.ActiveProviderView provider = modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
+        return modelVersionOf(modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING));
+    }
+
+    public static String modelVersionOf(ModelProviderConfigService.ActiveProviderView provider) {
         return provider.provider() + ":" + provider.model() + ":" + provider.dimension();
     }
 
