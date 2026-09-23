@@ -37,17 +37,17 @@ const { columns, columnChecks, data, loading, getData, mobilePagination } = useT
       width: 240,
       render: row => (
         <div class="flex gap-2">
-          <NButton type="success" ghost size="small" onClick={() => addChild(row)}>
+          <NButton type="success" quaternary size="small" onClick={() => addChild(row)}>
             新增下级
           </NButton>
-          <NButton type="primary" ghost size="small" onClick={() => edit(row)}>
+          <NButton type="primary" quaternary size="small" onClick={() => edit(row)}>
             编辑
           </NButton>
           <NPopconfirm onPositiveClick={() => handleDelete(row.tagId!)}>
             {{
               default: () => '确认删除当前标签吗？',
               trigger: () => (
-                <NButton type="error" ghost size="small">
+                <NButton type="error" quaternary size="small">
                   删除
                 </NButton>
               )
@@ -88,12 +88,13 @@ async function handleDelete(tagId: string) {
 </script>
 
 <template>
-  <div class="flex-col-stretch gap-16px overflow-hidden <sm:overflow-auto">
-    <NCard title="组织标签" :bordered="false" size="small" class="sm:flex-1-hidden card-wrapper">
+  <div class="workspace-page flex-col-stretch gap-16px overflow-hidden <sm:overflow-auto">
+    <NCard title="组织标签" :bordered="false" size="small" class="page-section sm:flex-1-hidden">
       <template #header-extra>
         <TableHeaderOperation v-model:columns="columnChecks" :loading="loading" @add="handleAdd" @refresh="getData" />
       </template>
       <NDataTable
+        :bordered="false"
         remote
         :columns="columns"
         :data="data"

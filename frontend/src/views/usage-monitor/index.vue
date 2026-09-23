@@ -4,6 +4,7 @@ import { NButton, NCard, NEmpty, NTag } from 'naive-ui';
 import type { ECOption } from '@/hooks/common/echarts';
 import { useEcharts } from '@/hooks/common/echarts';
 
+const activePanel = ref('overview');
 const trendWindow = ref<7 | 30>(7);
 const overviewLoading = ref(false);
 const overview = ref<Api.Admin.UsageOverview | null>(null);
@@ -129,6 +130,7 @@ const { domRef: trendChartRef, updateOptions } = useEcharts<ECOption>(() => ({
     trigger: 'axis'
   },
   legend: {
+    type: 'scroll',
     top: 0
   },
   grid: {
@@ -162,6 +164,7 @@ watch([overview, trendWindow], async () => {
       trigger: 'axis'
     },
     legend: {
+      type: 'scroll',
       top: 0
     },
     grid: {
@@ -255,24 +258,21 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-auto">
-    <NCard :bordered="false" size="small" class="card-wrapper">
+  <div class="workspace-page min-h-500px flex-col-stretch gap-16px overflow-auto">
+    <NTabs v-model:value="activePanel" type="line" size="large">
+      <NTab name="overview">用量总览</NTab>
+      <NTab name="limits">限流设置</NTab>
+    </NTabs>
+    <NCard v-show="activePanel === 'limits'" :bordered="false" size="small" class="page-section">
       <template #header>调用限流配置</template>
       <template #header-extra>
         <div class="flex items-center gap-2">
-          <span class="text-xs text-stone-400">保存后立即对新请求生效</span>
-          <NButton type="primary" size="small" :loading="rateLimitSaving" @click="submitRateLimits">
-            保存配置
-          </NButton>
+          <NButton type="primary" size="small" :loading="rateLimitSaving" @click="submitRateLimits">保存配置</NButton>
         </div>
       </template>
 
       <NSpin :show="rateLimitLoading">
-        <div class="mb-4 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-xs text-stone-500">
-          这里集中管理聊天消息、LLM 全网 Token 预算，以及 Embedding 上传/查询两条链路的运行时限流配置。保存后对新请求立即生效，无需改 `application.yml`。
-        </div>
-
-        <div v-if="rateLimits" class="grid gap-4 xl:grid-cols-2">
+        <div v-if="rateLimits" class="limits-layout">
           <div class="limit-card">
             <div class="limit-title">聊天消息</div>
             <div class="limit-grid">
@@ -318,7 +318,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">分钟窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingUploadToken.minuteWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingUploadToken.minuteWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
               <div>
                 <div class="limit-label">日 Token 上限</div>
@@ -326,7 +330,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">日窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingUploadToken.dayWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingUploadToken.dayWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
             </div>
           </div>
@@ -340,7 +348,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">分钟窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingQueryRequest.minuteWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingQueryRequest.minuteWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
               <div>
                 <div class="limit-label">单用户日次数</div>
@@ -348,7 +360,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">日窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingQueryRequest.dayWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingQueryRequest.dayWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
               <div>
                 <div class="limit-label">全网分钟 Token</div>
@@ -356,7 +372,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">查询分钟窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingQueryGlobalToken.minuteWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingQueryGlobalToken.minuteWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
               <div>
                 <div class="limit-label">全网日 Token</div>
@@ -364,7 +384,11 @@ onMounted(() => {
               </div>
               <div>
                 <div class="limit-label">查询日窗口秒数</div>
-                <NInputNumber v-model:value="rateLimits.embeddingQueryGlobalToken.dayWindowSeconds" :min="1" class="w-full" />
+                <NInputNumber
+                  v-model:value="rateLimits.embeddingQueryGlobalToken.dayWindowSeconds"
+                  :min="1"
+                  class="w-full"
+                />
               </div>
             </div>
           </div>
@@ -373,7 +397,7 @@ onMounted(() => {
       </NSpin>
     </NCard>
 
-    <NCard :bordered="false" size="small" class="card-wrapper">
+    <NCard v-show="activePanel === 'overview'" :bordered="false" size="small" class="page-section">
       <template #header>
         <div class="flex items-center gap-3">
           <span>用量总览</span>
@@ -383,14 +407,32 @@ onMounted(() => {
       </template>
       <template #header-extra>
         <div class="flex items-center gap-2">
-          <NButton size="small" :type="trendWindow === 7 ? 'primary' : 'default'" @click="trendWindow = 7; getOverview()">近7天</NButton>
-          <NButton size="small" :type="trendWindow === 30 ? 'primary' : 'default'" @click="trendWindow = 30; getOverview()">近30天</NButton>
+          <NButton
+            size="small"
+            :type="trendWindow === 7 ? 'primary' : 'default'"
+            @click="
+              trendWindow = 7;
+              getOverview();
+            "
+          >
+            近7天
+          </NButton>
+          <NButton
+            size="small"
+            :type="trendWindow === 30 ? 'primary' : 'default'"
+            @click="
+              trendWindow = 30;
+              getOverview();
+            "
+          >
+            近30天
+          </NButton>
         </div>
       </template>
 
       <NSpin :show="overviewLoading">
         <div class="flex flex-col gap-4">
-          <div class="grid gap-4 xl:grid-cols-5 sm:grid-cols-2">
+          <div class="summary-grid">
             <div class="summary-card">
               <div class="summary-label">今日聊天消息</div>
               <div class="summary-value">{{ formatNumber(todaySummary?.chatRequestCount) }}</div>
@@ -419,13 +461,13 @@ onMounted(() => {
           </div>
 
           <div class="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.6fr)]">
-            <NCard size="small" embedded class="overview-section">
+            <NCard size="small" :bordered="false" class="overview-section">
               <template #header>调用趋势</template>
               <div ref="trendChartRef" class="h-360px w-full" />
             </NCard>
 
             <div class="flex flex-col gap-4">
-              <NCard size="small" embedded class="overview-section">
+              <NCard size="small" :bordered="false" class="overview-section">
                 <template #header>超额与预警</template>
                 <div v-if="overview?.alerts?.length" class="flex flex-col gap-3">
                   <div
@@ -435,24 +477,25 @@ onMounted(() => {
                   >
                     <div class="flex items-center justify-between gap-3">
                       <div class="flex items-center gap-2">
-                        <span class="font-medium text-stone-700">{{ alert.username }}</span>
+                        <span class="text-body font-medium">{{ alert.username }}</span>
                         <NTag size="small" :type="alertType(alert.level)">{{ scopeLabel(alert.scope) }}</NTag>
                       </div>
                       <NTag size="small" :type="alertType(alert.level)">{{ alert.message }}</NTag>
                     </div>
-                    <div class="text-xs text-stone-500">
-                      {{ formatNumber(alert.usedTokens) }} / {{ formatNumber(alert.limitTokens) }}，剩余 {{ formatNumber(alert.remainingTokens) }}，{{ alert.requestCount }} 次
+                    <div class="text-muted text-xs">
+                      {{ formatNumber(alert.usedTokens) }} / {{ formatNumber(alert.limitTokens) }}，剩余
+                      {{ formatNumber(alert.remainingTokens) }}，{{ alert.requestCount }} 次
                     </div>
                   </div>
                 </div>
                 <NEmpty v-else size="small" description="暂无告警" />
               </NCard>
 
-              <NCard size="small" embedded class="overview-section">
+              <NCard size="small" :bordered="false" class="overview-section">
                 <template #header>今日用量排行</template>
                 <div class="flex flex-col gap-4">
                   <div>
-                    <div class="mb-2 text-xs font-semibold uppercase tracking-0.12em text-stone-400">LLM</div>
+                    <div class="text-muted mb-2 text-xs font-semibold tracking-0.12em uppercase">LLM</div>
                     <div v-if="overview?.llmRankings?.length" class="flex flex-col gap-2">
                       <div
                         v-for="(item, index) in overview.llmRankings"
@@ -461,9 +504,10 @@ onMounted(() => {
                       >
                         <span class="ranking-index">{{ index + 1 }}</span>
                         <div class="flex-1">
-                          <div class="font-medium text-stone-700">{{ item.username }}</div>
-                          <div class="text-xs text-stone-500">
-                            {{ formatNumber(item.usedTokens) }} / {{ formatNumber(item.limitTokens) }} · {{ item.requestCount }} 次
+                          <div class="text-body font-medium">{{ item.username }}</div>
+                          <div class="text-muted text-xs">
+                            {{ formatNumber(item.usedTokens) }} / {{ formatNumber(item.limitTokens) }} ·
+                            {{ item.requestCount }} 次
                           </div>
                         </div>
                       </div>
@@ -472,7 +516,7 @@ onMounted(() => {
                   </div>
 
                   <div>
-                    <div class="mb-2 text-xs font-semibold uppercase tracking-0.12em text-stone-400">Embedding</div>
+                    <div class="text-muted mb-2 text-xs font-semibold tracking-0.12em uppercase">Embedding</div>
                     <div v-if="overview?.embeddingRankings?.length" class="flex flex-col gap-2">
                       <div
                         v-for="(item, index) in overview.embeddingRankings"
@@ -481,9 +525,10 @@ onMounted(() => {
                       >
                         <span class="ranking-index">{{ index + 1 }}</span>
                         <div class="flex-1">
-                          <div class="font-medium text-stone-700">{{ item.username }}</div>
-                          <div class="text-xs text-stone-500">
-                            {{ formatNumber(item.usedTokens) }} / {{ formatNumber(item.limitTokens) }} · {{ item.requestCount }} 次
+                          <div class="text-body font-medium">{{ item.username }}</div>
+                          <div class="text-muted text-xs">
+                            {{ formatNumber(item.usedTokens) }} / {{ formatNumber(item.limitTokens) }} ·
+                            {{ item.requestCount }} 次
                           </div>
                         </div>
                       </div>
@@ -501,55 +546,111 @@ onMounted(() => {
 </template>
 
 <style scoped lang="scss">
+.limits-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 40px 56px;
+  padding-top: 8px;
+}
 .limit-card {
-  @apply rounded-2xl border border-stone-200 bg-[linear-gradient(180deg,_rgba(255,255,255,0.98),_rgba(248,250,252,0.94))] p-4 shadow-sm;
+  min-width: 0;
 }
-
 .limit-title {
-  @apply mb-4 text-sm font-semibold text-stone-700;
+  margin-bottom: 20px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--app-text);
 }
-
 .limit-grid {
-  @apply grid gap-3 sm:grid-cols-2;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
 }
-
 .limit-label {
-  @apply mb-2 text-xs font-semibold uppercase tracking-0.08em text-stone-400;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--app-muted);
 }
-
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+}
 .summary-card {
-  @apply rounded-2xl border border-stone-200 bg-[linear-gradient(180deg,_rgba(255,255,255,0.96),_rgba(248,250,252,0.92))] p-4 shadow-sm;
+  padding: 16px 12px 24px;
+  min-width: 0;
 }
-
-.summary-card.is-alert {
-  @apply border-amber-200 bg-[linear-gradient(180deg,_rgba(255,251,235,0.98),_rgba(254,243,199,0.7))];
-}
-
 .summary-label {
-  @apply text-xs font-semibold uppercase tracking-0.12em text-stone-400;
+  font-size: 12px;
+  color: var(--app-muted);
 }
-
 .summary-value {
-  @apply mt-3 text-7 font-semibold text-stone-800;
+  margin-top: 12px;
+  font-size: 30px;
+  line-height: 1.3;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text);
 }
-
+.summary-card.is-alert .summary-value {
+  color: rgb(var(--warning-color));
+}
 .summary-sub {
-  @apply mt-1 text-xs text-stone-500;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--app-muted);
 }
-
 .overview-section {
-  border-radius: 20px;
+  background: transparent;
+  border-radius: 0;
 }
-
+.overview-section :deep(.n-card-header) {
+  padding: 16px 0;
+}
+.overview-section :deep(.n-card__content) {
+  padding: 0;
+}
 .alert-item {
-  @apply rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--app-border);
 }
-
 .ranking-item {
-  @apply flex items-center gap-3 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
 }
-
 .ranking-index {
-  @apply inline-flex h-8 w-8 items-center justify-center rounded-full bg-stone-900 text-xs font-semibold text-white;
+  width: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--app-muted);
+}
+@media (max-width: 900px) {
+  .summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .limits-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+@media (max-width: 640px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .summary-card {
+    padding: 12px 0;
+  }
+  .summary-value {
+    font-size: 24px;
+    overflow-wrap: anywhere;
+  }
+}
+@media (max-width: 480px) {
+  .limit-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

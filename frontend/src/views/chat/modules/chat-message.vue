@@ -8,9 +8,9 @@ import { VueMarkdownIt } from '@/vendor/vue-markdown-shiki';
 defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{
-  msg: Api.Chat.Message,
-  sessionId?: string,
-  retrievalQueryFallback?: string
+  msg: Api.Chat.Message;
+  sessionId?: string;
+  retrievalQueryFallback?: string;
 }>();
 
 const authStore = useAuthStore();
@@ -68,7 +68,9 @@ async function handleFeedback(message: Api.Chat.Message, rating: 'good' | 'bad')
 }
 
 // 存储文件名和对应的事件处理
-const sourceFiles = ref<Array<{fileName: string, id: string, referenceNumber: number, fileMd5?: string, pageNumber?: number}>>([]);
+const sourceFiles = ref<
+  Array<{ fileName: string; id: string; referenceNumber: number; fileMd5?: string; pageNumber?: number }>
+>([]);
 const bareUrlPattern = /https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
 const toolNameLabels: Record<string, string> = {
   search_knowledge: '检索知识库',
@@ -147,7 +149,7 @@ function createSourceLink(
 ): string {
   const trimmedFileName = fileName.trim();
   const fileId = `source-file-${sourceFiles.value.length}`;
-  const referenceNumber = parseInt(sourceNum, 10);
+  const referenceNumber = Number.parseInt(sourceNum, 10);
   const suspicious = props.msg.referenceMappings?.[sourceNum]?.citationStatus === 'SUSPICIOUS';
   const linkClass = suspicious ? 'source-file-link source-file-link--suspicious' : 'source-file-link';
 
@@ -182,14 +184,11 @@ function processSourceLinks(text: string): string {
     `来源#(\\d+):\\s*([^|;；,，、。！？!?\\n\\r]+?)\\s*\\|\\s*MD5:\\s*([a-fA-F0-9]+)${entryBoundary}`,
     'g'
   );
-  const simplePattern = new RegExp(
-    `来源#(\\d+):\\s*([^<>\\n\\r|;；,，、。！？!?]+?)${entryBoundary}`,
-    'g'
-  );
+  const simplePattern = new RegExp(`来源#(\\d+):\\s*([^<>\\n\\r|;；,，、。！？!?]+?)${entryBoundary}`, 'g');
 
   let processedText = text.replace(pagePattern, (_match, sourceNum, fileName, pageNum) => {
     return createSourceLink(sourceNum, fileName, {
-      pageNumber: parseInt(pageNum, 10),
+      pageNumber: Number.parseInt(pageNum, 10),
       displayName: `${fileName.trim()} (第${pageNum}页)`
     });
   });
@@ -291,15 +290,28 @@ async function handleSourceFileClick(fileInfo: {
   anchorText?: string;
 }) {
   const { fileName, referenceNumber, fileMd5: extractedMd5, anchorText: clickedAnchorText } = fileInfo;
-  const persistedDetail = props.msg.referenceMappings?.[String(referenceNumber)] || props.msg.referenceMappings?.[referenceNumber];
+  const persistedDetail =
+    props.msg.referenceMappings?.[String(referenceNumber)] || props.msg.referenceMappings?.[referenceNumber];
   const referenceSessionId = props.msg.generationId || props.msg.conversationId || props.sessionId;
-  console.log('点击了来源文件:', fileName, '引用编号:', referenceNumber, '提取的MD5:', extractedMd5, '会话ID:', referenceSessionId);
+  console.log(
+    '点击了来源文件:',
+    fileName,
+    '引用编号:',
+    referenceNumber,
+    '提取的MD5:',
+    extractedMd5,
+    '会话ID:',
+    referenceSessionId
+  );
 
   try {
     let detail: Api.Document.ReferenceDetailResponse | null = null;
     const fallbackRetrievalQuery = props.retrievalQueryFallback || '';
 
-    if (referenceSessionId && (!persistedDetail?.retrievalQuery || !persistedDetail?.matchedChunkText || !persistedDetail?.evidenceSnippet)) {
+    if (
+      referenceSessionId &&
+      (!persistedDetail?.retrievalQuery || !persistedDetail?.matchedChunkText || !persistedDetail?.evidenceSnippet)
+    ) {
       try {
         const { error: detailError, data: detailData } = await request<Api.Document.ReferenceDetailResponse>({
           url: 'documents/reference-detail',
@@ -367,7 +379,7 @@ async function handleSourceFileClick(fileInfo: {
       </NAvatar>
       <div class="flex-col gap-1">
         <NText class="text-4 font-bold">{{ msg.username || authStore.userInfo.username }}</NText>
-        <NText class="text-3 color-gray-500">{{ formatDate(msg.timestamp) }}</NText>
+        <NText class="text-muted text-3">{{ formatDate(msg.timestamp) }}</NText>
       </div>
     </div>
     <div v-else class="flex items-center gap-4">
@@ -376,7 +388,7 @@ async function handleSourceFileClick(fileInfo: {
       </NAvatar>
       <div class="flex-col gap-1">
         <NText class="text-4 font-bold">派聪明</NText>
-        <NText class="text-3 color-gray-500">{{ formatDate(msg.timestamp) }}</NText>
+        <NText class="text-muted text-3">{{ formatDate(msg.timestamp) }}</NText>
       </div>
     </div>
     <div v-if="msg.role === 'assistant' && toolEvents.length > 0" class="ml-12 mt-3 flex flex-col gap-2">
@@ -396,14 +408,13 @@ async function handleSourceFileClick(fileInfo: {
     <NText v-if="msg.status === 'pending' || (msg.status === 'loading' && msg.role === 'assistant' && !msg.content)">
       <icon-eos-icons:three-dots-loading class="ml-12 mt-2 text-8" />
     </NText>
-    <NText v-else-if="msg.status === 'error'" class="ml-12 mt-2 italic color-#d03050">
+    <NText v-else-if="msg.status === 'error'" class="ml-12 mt-2 color-#d03050 italic">
       {{ msg.content || '服务器繁忙，请稍后再试' }}
     </NText>
     <div v-else-if="msg.role === 'assistant'" class="mt-2 pl-12" @click="handleContentClick">
       <VueMarkdownIt :content="content" />
     </div>
     <NText v-else-if="msg.role === 'user'" class="ml-12 mt-2 text-4">{{ content }}</NText>
-    <NDivider class="ml-12 w-[calc(100%-3rem)] mb-0! mt-2!" />
     <div class="ml-12 flex gap-2">
       <NButton quaternary title="复制回答" aria-label="复制回答" @click="handleCopy(msg.content)">
         <template #icon>
@@ -479,22 +490,22 @@ async function handleSourceFileClick(fileInfo: {
   max-width: 100%;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgb(var(--border-color) / 0.18);
+  border: 1px solid var(--app-border);
   border-radius: 6px;
-  background: rgb(var(--card-color));
+  background: var(--app-subtle);
   padding: 5px 9px;
   font-size: 12px;
   line-height: 18px;
-  color: rgb(var(--text-color-2));
+  color: var(--app-muted);
 }
 
 .tool-event__name {
   font-weight: 500;
-  color: rgb(var(--text-color));
+  color: var(--app-text);
 }
 
 .tool-event__status {
-  color: rgb(var(--text-color-3));
+  color: var(--app-muted);
 }
 
 .tool-event--success {

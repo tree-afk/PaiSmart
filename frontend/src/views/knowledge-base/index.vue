@@ -147,7 +147,16 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
       key: 'isPublic',
       title: '是否公开',
       width: 100,
-      render: row => (row.public || row.isPublic ? <NTag type="success">公开</NTag> : <NTag type="warning">私有</NTag>)
+      render: row =>
+        row.public || row.isPublic ? (
+          <NTag bordered={false} type="success">
+            公开
+          </NTag>
+        ) : (
+          <NTag bordered={false} type="warning">
+            私有
+          </NTag>
+        )
     },
     {
       key: 'createdAt',
@@ -162,7 +171,7 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
       render: row => (
         <div class="flex gap-4">
           {canManageFile(row) ? renderResumeUploadButton(row) : null}
-          <NButton type="primary" ghost size="small" onClick={() => handleFilePreview(row.fileName, row.fileMd5)}>
+          <NButton type="primary" quaternary size="small" onClick={() => handleFilePreview(row.fileName, row.fileMd5)}>
             预览
           </NButton>
           {canManageFile(row) ? (
@@ -170,7 +179,7 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
               {{
                 default: () => '确认删除当前文件吗？',
                 trigger: () => (
-                  <NButton type="error" ghost size="small">
+                  <NButton type="error" quaternary size="small">
                     删除
                   </NButton>
                 )
@@ -280,22 +289,32 @@ function handleSearch() {
 
 // 渲染上传状态
 function renderStatus(status: UploadStatus, percentage: number) {
-  if (status === UploadStatus.Completed) return <NTag type="success">已完成</NTag>;
-  else if (status === UploadStatus.Break) return <NTag type="error">上传中断</NTag>;
+  if (status === UploadStatus.Completed)
+    return (
+      <NTag bordered={false} type="success">
+        已完成
+      </NTag>
+    );
+  else if (status === UploadStatus.Break)
+    return (
+      <NTag bordered={false} type="error">
+        上传中断
+      </NTag>
+    );
   return <NProgress percentage={percentage} processing />;
 }
 
 function renderEstimatedEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
   if (!row.estimatedEmbeddingTokens) {
-    return <span class="text-xs text-stone-400">-</span>;
+    return <span class="text-muted text-xs">-</span>;
   }
 
   const estimatedTokenLabel = Number(row.estimatedEmbeddingTokens).toLocaleString();
   const estimatedChunkLabel = Number(row.estimatedChunkCount || 0).toLocaleString();
   return (
-    <div class="text-xs text-stone-600 leading-5">
+    <div class="text-muted text-xs leading-5">
       <div>{estimatedTokenLabel} Tokens</div>
-      <div class="text-stone-400">{estimatedChunkLabel} 个切片</div>
+      <div class="text-muted">{estimatedChunkLabel} 个切片</div>
     </div>
   );
 }
@@ -337,7 +356,7 @@ async function handleRetryVectorization(row: Api.KnowledgeBase.UploadTask) {
 
 function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
   if (row.status !== UploadStatus.Completed) {
-    return <span class="text-xs text-stone-400">-</span>;
+    return <span class="text-muted text-xs">-</span>;
   }
 
   if (hasActualVectorizationUsage(row)) {
@@ -346,7 +365,7 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     return (
       <div class="text-xs text-emerald-700 leading-5">
         <div>{actualTokenLabel} Tokens</div>
-        <div class="text-stone-400">{actualChunkLabel} 个切片</div>
+        <div class="text-muted">{actualChunkLabel} 个切片</div>
       </div>
     );
   }
@@ -355,7 +374,7 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     return (
       <div class="text-xs text-sky-700 leading-5">
         <div>向量化处理中</div>
-        <div class="text-stone-400">完成后会回写实际 Tokens</div>
+        <div class="text-muted">完成后会回写实际 Tokens</div>
       </div>
     );
   }
@@ -364,12 +383,12 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     return (
       <div class="flex flex-col gap-6px text-xs leading-5">
         <div class="text-emerald-700 font-500">向量化已完成</div>
-        <NEllipsis tooltip lineClamp={2} class="text-stone-500">
+        <NEllipsis tooltip lineClamp={2} class="text-muted">
           {row.vectorizationErrorMessage || '历史数据未统计实际 Tokens，可按需重试回写'}
         </NEllipsis>
         {canRetryVectorization(row) ? (
           <div>
-            <NButton size="tiny" ghost onClick={() => handleRetryVectorization(row)}>
+            <NButton size="tiny" quaternary onClick={() => handleRetryVectorization(row)}>
               重试向量化
             </NButton>
           </div>
@@ -382,12 +401,12 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     return (
       <div class="flex flex-col gap-6px text-xs leading-5">
         <div class="text-rose-600 font-500">向量化失败</div>
-        <NEllipsis tooltip lineClamp={2} class="text-stone-500">
+        <NEllipsis tooltip lineClamp={2} class="text-muted">
           {row.vectorizationErrorMessage || '请检查 Embedding 额度或稍后重试'}
         </NEllipsis>
         {canRetryVectorization(row) ? (
           <div>
-            <NButton size="tiny" type="error" ghost onClick={() => handleRetryVectorization(row)}>
+            <NButton size="tiny" type="error" quaternary onClick={() => handleRetryVectorization(row)}>
               重试向量化
             </NButton>
           </div>
@@ -400,9 +419,9 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     return (
       <div class="flex flex-col gap-6px text-xs leading-5">
         <div class="text-amber-600">暂无实际向量化结果</div>
-        <div class="text-stone-400">可能仍在处理，或历史任务未回写结果</div>
+        <div class="text-muted">可能仍在处理，或历史任务未回写结果</div>
         <div>
-          <NButton size="tiny" ghost onClick={() => handleRetryVectorization(row)}>
+          <NButton size="tiny" quaternary onClick={() => handleRetryVectorization(row)}>
             重试向量化
           </NButton>
         </div>
@@ -410,7 +429,7 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
     );
   }
 
-  return <span class="text-xs text-stone-400">-</span>;
+  return <span class="text-muted text-xs">-</span>;
 }
 
 let vectorizationPollingTimer: number | null = null;
@@ -455,7 +474,7 @@ function renderResumeUploadButton(row: Api.KnowledgeBase.UploadTask) {
   if (row.status === UploadStatus.Break) {
     if (row.file)
       return (
-        <NButton type="primary" size="small" ghost onClick={() => resumeUpload(row)}>
+        <NButton type="primary" size="small" quaternary onClick={() => resumeUpload(row)}>
           续传
         </NButton>
       );
@@ -467,7 +486,7 @@ function renderResumeUploadButton(row: Api.KnowledgeBase.UploadTask) {
         onBeforeUpload={options => onBeforeUpload(options, row)}
         class="w-fit"
       >
-        <NButton type="primary" size="small" ghost>
+        <NButton type="primary" size="small" quaternary>
           续传
         </NButton>
       </NUpload>
@@ -511,8 +530,8 @@ async function onBeforeUpload(
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-hidden lt-sm:overflow-auto">
-    <NCard title="文件列表" :bordered="false" size="small" class="sm:flex-1-hidden card-wrapper">
+  <div class="workspace-page min-h-500px flex-col-stretch gap-16px overflow-hidden lt-sm:overflow-auto">
+    <NCard title="文件列表" :bordered="false" size="small" class="page-section sm:flex-1-hidden">
       <template #header-extra>
         <TableHeaderOperation v-model:columns="columnChecks" :loading="loading" @add="handleUpload" @refresh="getList">
           <template #prefix>
@@ -526,7 +545,7 @@ async function onBeforeUpload(
         </TableHeaderOperation>
       </template>
       <NDataTable
-        striped
+        :bordered="false"
         :columns="columns"
         :data="tableTasks"
         size="small"

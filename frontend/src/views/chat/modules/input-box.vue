@@ -386,7 +386,7 @@ onUnmounted(() => {
         ref="inputRef"
         v-model.trim="input.message"
         placeholder="给 派聪明 发送消息，Enter 发送，Shift+Enter 换行"
-        class="max-h-32 min-h-6 w-full flex-1 resize-none border-none bg-transparent py-1 text-14px color-#333 caret-[rgb(var(--primary-color))] outline-none placeholder:text-#bbb dark:color-#e1e1e1 dark:placeholder:text-#555"
+        class="text-body max-h-32 min-h-6 w-full flex-1 resize-none border-none bg-transparent py-1 text-14px caret-[rgb(var(--primary-color))] outline-none"
         @keydown="handShortcut"
       />
       <NButton
@@ -414,18 +414,21 @@ onUnmounted(() => {
               'bg-red-400': connectionStatus === 'CLOSED'
             }"
           />
-          <span class="text-11px color-#aaa">{{ connectionText }}</span>
+          <span class="text-muted text-11px">{{ connectionText }}</span>
         </div>
         <span v-if="isRateLimited" class="text-11px text-[rgb(var(--primary-color))]">
           {{ cooldownText }}
         </span>
       </div>
-      <span class="text-11px color-#bbb">Shift+Enter 换行</span>
+      <span class="text-muted text-11px">Shift+Enter 换行</span>
     </div>
   </div>
 </template>
 
 <style scoped>
+textarea::placeholder {
+  color: var(--app-muted);
+}
 .chat-input-shell {
   border: 1px solid rgba(15, 23, 42, 0.12);
   box-shadow:

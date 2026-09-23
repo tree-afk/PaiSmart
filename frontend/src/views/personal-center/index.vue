@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, h } from 'vue';
+import { computed, h, onMounted, ref } from 'vue';
 import { NTag } from 'naive-ui';
 const { userInfo } = storeToRefs(useAuthStore());
 
@@ -132,20 +132,20 @@ const tokenRecordColumns = computed(() => [
   {
     title: '日期',
     key: 'recordDate',
-    width: 100,
+    width: 130,
     render: (row: Api.User.TokenRecord) => row.recordDate
   },
   {
     title: 'Token 类型',
     key: 'tokenType',
-    width: 100,
+    width: 140,
     render: (row: Api.User.TokenRecord) => {
       const typeMap: Record<string, { text: string; type: any }> = {
         LLM: { text: 'LLM', type: 'info' },
         EMBEDDING: { text: 'Embedding', type: 'success' }
       };
       const type = typeMap[row.tokenType] || { text: row.tokenType, type: 'default' };
-      return h(NTag, { type: type.type }, () => type.text);
+      return h(NTag, { type: type.type, bordered: false }, () => type.text);
     }
   },
   {
@@ -158,7 +158,7 @@ const tokenRecordColumns = computed(() => [
         CONSUME: { text: '消耗', type: 'warning' }
       };
       const type = typeMap[row.changeType] || { text: row.changeType, type: 'default' };
-      return h(NTag, { type: type.type }, () => type.text);
+      return h(NTag, { type: type.type, bordered: false }, () => type.text);
     }
   },
   {
@@ -205,116 +205,167 @@ const tokenRecordColumns = computed(() => [
 </script>
 
 <template>
-  <NSpin :show="loading">
-    <div class="flex-cc">
-      <NCard class="min-h-400px min-w-600px w-70vw card-wrapper" :segmented="{ content: true, footer: 'soft' }">
+  <div class="workspace-page profile-page overflow-auto">
+    <NSpin :show="loading">
+      <NCard :bordered="false" class="page-section profile-section">
         <template #header>
           <div class="flex items-center gap-4">
-            <NAvatar size="large">
-              <icon-solar:user-circle-linear class="text-icon-large" />
-            </NAvatar>
-            <div class="flex flex-col gap-1">
+            <NAvatar size="large"><icon-solar:user-circle-linear class="text-icon-large" /></NAvatar>
+            <div>
               <div>{{ userInfo.username }}</div>
-              <span class="text-xs text-stone-400">今日额度 · {{ usage.day || '未统计' }}</span>
+              <div class="text-muted mt-1 text-xs">今日额度 · {{ usage.day || '未统计' }}</div>
             </div>
           </div>
         </template>
-        <NScrollbar class="max-h-60vh">
-          <div class="flex flex-col gap-4 p-4">
-            <div class="grid gap-4 md:grid-cols-2">
-              <NCard size="small" embedded class="quota-card">
-                <div class="text-sm font-semibold text-stone-700">LLM Token</div>
-                <div v-if="usage.llm.enabled" class="mt-3 flex flex-col gap-2 text-sm text-stone-500">
-                  <div>已用 {{ usage.llm.usedTokens.toLocaleString() }} / {{ usage.llm.limitTokens.toLocaleString() }}</div>
-                  <div>剩余 {{ usage.llm.remainingTokens.toLocaleString() }}</div>
-                  <div>请求 {{ usage.llm.requestCount.toLocaleString() }} 次</div>
-                </div>
-                <div v-else class="mt-3 text-sm text-stone-400">当前未启用配额</div>
-              </NCard>
-              <NCard size="small" embedded class="quota-card">
-                <div class="text-sm font-semibold text-stone-700">Embedding Token</div>
-                <div v-if="usage.embedding.enabled" class="mt-3 flex flex-col gap-2 text-sm text-stone-500">
-                  <div>已用 {{ usage.embedding.usedTokens.toLocaleString() }} / {{ usage.embedding.limitTokens.toLocaleString() }}</div>
-                  <div>剩余 {{ usage.embedding.remainingTokens.toLocaleString() }}</div>
-                  <div>请求 {{ usage.embedding.requestCount.toLocaleString() }} 次</div>
-                </div>
-                <div v-else class="mt-3 text-sm text-stone-400">当前未启用配额</div>
-              </NCard>
-            </div>
+        <div class="quota-grid">
+          <section
+            v-for="(quota, scope) in { llm: usage.llm, embedding: usage.embedding }"
+            :key="scope"
+            class="quota-block"
+          >
+            <h2>{{ scope === 'llm' ? 'LLM Token' : 'Embedding Token' }}</h2>
+            <template v-if="quota.enabled">
+              <div class="quota-value">
+                {{ quota.remainingTokens.toLocaleString() }}
+                <span>剩余</span>
+              </div>
+              <NProgress
+                type="line"
+                :percentage="
+                  Math.min(100, Math.max(0, quota.limitTokens > 0 ? (quota.usedTokens / quota.limitTokens) * 100 : 0))
+                "
+                :show-indicator="false"
+                :height="4"
+              />
+              <div class="text-muted mt-3 flex flex-wrap justify-between gap-2 text-xs">
+                <span>已用 {{ quota.usedTokens.toLocaleString() }} / {{ quota.limitTokens.toLocaleString() }}</span>
+                <span>请求 {{ quota.requestCount.toLocaleString() }} 次</span>
+              </div>
+            </template>
+            <div v-else class="text-muted mt-4">当前未启用配额</div>
+          </section>
+        </div>
 
-            <div class="flex flex-wrap gap-4">
-            <NCard
+        <section class="profile-tags">
+          <h2>组织标签</h2>
+          <div class="org-tag-grid">
+            <button
               v-for="tag in tags.orgTagDetails"
               :key="tag.tagId"
-              size="small"
-              embedded
-              hoverable
-              class="w-[calc((100%-32px)/3)]"
-              :segmented="{ content: true, footer: 'soft' }"
+              type="button"
+              class="org-tag-option"
               @click="showModal(tag.tagId)"
             >
-              <div class="flex items-center justify-between">
-                <div>{{ tag.name }}</div>
-                <NTag v-if="tag.tagId === tags.primaryOrg" type="primary" size="small">
-                  主标签
-                  <template #icon>
-                    <icon-solar:verified-check-bold-duotone class="text-icon" />
-                  </template>
-                </NTag>
+              <div class="flex items-center justify-between gap-3">
+                <span>{{ tag.name }}</span>
+                <NTag v-if="tag.tagId === tags.primaryOrg" type="primary" size="small" :bordered="false">主标签</NTag>
               </div>
-              <template #footer>
-                <NEllipsis :line-clamp="3">{{ tag.description }}</NEllipsis>
-              </template>
-            </NCard>
-            </div>
+              <p class="text-muted mt-2 text-xs">{{ tag.description }}</p>
+            </button>
           </div>
-        </NScrollbar>
-        <template #footer>
-          <div class="flex flex-col gap-4">
-            <NDivider>Token 变动记录</NDivider>
-            <NSpin :show="tokenRecordLoading">
-              <NDataTable
-                v-if="tokenRecords.length > 0"
-                :columns="tokenRecordColumns"
-                :data="tokenRecords"
-                :loading="tokenRecordLoading"
-                :pagination="{
-                  page: pagination.page,
-                  pageSize: pagination.pageSize,
-                  itemCount: pagination.total,
-                  onChange: handlePageChange
-                }"
-                :scroll-x="1200"
-                size="small"
-              />
-              <NEmpty v-else description="暂无记录" />
-            </NSpin>
-          </div>
-        </template>
-      </NCard>
+        </section>
 
-      <NModal
-        v-model:show="visible"
-        :loading="submitLoading"
-        preset="dialog"
-        title="设置主标签"
-        content="确定将当前标签设置为主标签吗？"
-        positive-text="确认"
-        negative-text="取消"
-        @positive-click="setPrimaryOrg"
-        @negative-click="visible = false"
-      />
-    </div>
-  </NSpin>
+        <section class="profile-records">
+          <h2>Token 变动记录</h2>
+          <NSpin :show="tokenRecordLoading">
+            <NDataTable
+              v-if="tokenRecords.length > 0"
+              :bordered="false"
+              :columns="tokenRecordColumns"
+              :data="tokenRecords"
+              :loading="tokenRecordLoading"
+              :pagination="{
+                page: pagination.page,
+                pageSize: pagination.pageSize,
+                itemCount: pagination.total,
+                onChange: handlePageChange
+              }"
+              :scroll-x="1200"
+              size="small"
+            />
+            <NEmpty v-else description="暂无记录" />
+          </NSpin>
+        </section>
+      </NCard>
+    </NSpin>
+    <NModal
+      v-model:show="visible"
+      :loading="submitLoading"
+      preset="dialog"
+      title="设置主标签"
+      content="确定将当前标签设置为主标签吗？"
+      positive-text="确认"
+      negative-text="取消"
+      @positive-click="setPrimaryOrg"
+      @negative-click="visible = false"
+    />
+  </div>
 </template>
 
 <style scoped lang="scss">
-:deep(.n-card__content) {
-  flex: none m !important;
-  height: fit-content;
+.profile-section {
+  max-width: 1120px;
+  margin: 0 auto;
 }
-
-.quota-card {
-  border-radius: 16px;
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 48px;
+  padding: 12px 0 32px;
+}
+h2 {
+  margin: 0 0 20px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.quota-value {
+  margin: 16px 0;
+  font-size: 30px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.quota-value span {
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--app-muted);
+}
+.profile-tags,
+.profile-records {
+  border-top: 1px solid var(--app-border);
+  padding-top: 28px;
+  margin-top: 8px;
+}
+.profile-tags {
+  padding-bottom: 28px;
+}
+.org-tag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.org-tag-option {
+  padding: 16px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  background: var(--app-subtle);
+  color: var(--app-text);
+  cursor: pointer;
+}
+.org-tag-option:focus-visible {
+  outline: 2px solid rgb(var(--primary-color));
+}
+@media (max-width: 640px) {
+  .quota-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+  .quota-value {
+    font-size: 26px;
+  }
+  .org-tag-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

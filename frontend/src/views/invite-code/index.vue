@@ -29,6 +29,7 @@ const data = ref<Api.InviteCode.Item[]>([]);
 const checkedRowKeys = ref<number[]>([]);
 
 const filterStatus = ref<'all' | 'enabled' | 'disabled'>('all');
+const appliedStatus = ref<'all' | 'enabled' | 'disabled'>('all');
 const visible = ref(false);
 const submitting = ref(false);
 const editingId = ref<number | null>(null);
@@ -171,16 +172,34 @@ const columns = computed<DataTableColumns<Api.InviteCode.Item>>(() => [
     key: 'enabled',
     title: '状态',
     width: 84,
-    render: row => <NTag type={row.enabled ? 'success' : 'default'}>{row.enabled ? '已启用' : '已禁用'}</NTag>
+    render: row => (
+      <NTag bordered={false} type={row.enabled ? 'success' : 'default'}>
+        {row.enabled ? '已启用' : '已禁用'}
+      </NTag>
+    )
   },
   {
     key: 'availability',
     title: '可用性',
     width: 92,
     render: row => {
-      if (!row.enabled) return <NTag type="default">不可用</NTag>;
-      if (row.usedCount >= row.maxUses) return <NTag type="error">已耗尽</NTag>;
-      return <NTag type="success">可使用</NTag>;
+      if (!row.enabled)
+        return (
+          <NTag bordered={false} type="default">
+            不可用
+          </NTag>
+        );
+      if (row.usedCount >= row.maxUses)
+        return (
+          <NTag bordered={false} type="error">
+            已耗尽
+          </NTag>
+        );
+      return (
+        <NTag bordered={false} type="success">
+          可使用
+        </NTag>
+      );
     }
   },
   {
@@ -202,7 +221,7 @@ const columns = computed<DataTableColumns<Api.InviteCode.Item>>(() => [
     render: row => (
       <div class="flex items-center gap-2">
         {row.usedCount === 0 ? (
-          <NButton type="primary" ghost size="small" onClick={() => openEditDialog(row)}>
+          <NButton type="primary" quaternary size="small" onClick={() => openEditDialog(row)}>
             编辑
           </NButton>
         ) : null}
@@ -211,20 +230,22 @@ const columns = computed<DataTableColumns<Api.InviteCode.Item>>(() => [
             {{
               default: () => '禁用后该邀请码将无法继续使用，确认继续吗？',
               trigger: () => (
-                <NButton type="warning" ghost size="small">
+                <NButton type="warning" quaternary size="small">
                   禁用
                 </NButton>
               )
             }}
           </NPopconfirm>
         ) : (
-          <NTag type="default">已停用</NTag>
+          <NTag bordered={false} type="default">
+            已停用
+          </NTag>
         )}
         <NPopconfirm onPositiveClick={() => handleDelete(row.id)}>
           {{
             default: () => '删除后无法恢复，确认删除该邀请码吗？',
             trigger: () => (
-              <NButton type="error" ghost size="small">
+              <NButton type="error" quaternary size="small">
                 删除
               </NButton>
             )
@@ -253,7 +274,7 @@ async function getData() {
   const { data: payload, error } = await fetchGetInviteCodeList({
     page: Number(pagination.page),
     size: Number(pagination.pageSize),
-    enabled: filterStatus.value === 'all' ? null : filterStatus.value === 'enabled'
+    enabled: appliedStatus.value === 'all' ? null : appliedStatus.value === 'enabled'
   });
 
   if (!error && payload) {
@@ -271,10 +292,15 @@ function handleCheck(rowKeys: DataTableRowKey[]) {
   checkedRowKeys.value = rowKeys.map(Number);
 }
 
-async function handleFilterChange(value: 'all' | 'enabled' | 'disabled') {
-  filterStatus.value = value;
+async function searchInvites() {
+  appliedStatus.value = filterStatus.value;
   pagination.page = 1;
   await getData();
+}
+
+async function resetFilters() {
+  filterStatus.value = 'all';
+  await searchInvites();
 }
 
 function openCreateDialog() {
@@ -384,22 +410,16 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-auto">
+  <div class="workspace-page min-h-500px flex-col-stretch gap-16px overflow-auto">
     <NCard
       title="邀请码管理"
       :bordered="false"
       size="small"
-      class="sm:flex-1-hidden card-wrapper"
+      class="page-section sm:flex-1-hidden"
       content-class="flex-col-stretch min-h-0 sm:h-full"
     >
       <template #header-extra>
         <NSpace :size="12" align="center" wrap>
-          <NSelect
-            v-model:value="filterStatus"
-            :options="enabledOptions"
-            class="w-140px"
-            @update:value="handleFilterChange"
-          />
           <NButton type="primary" @click="openCreateDialog">创建邀请码</NButton>
           <NPopconfirm @positive-click="handleBatchDelete">
             <template #trigger>
@@ -411,12 +431,19 @@ onMounted(() => {
         </NSpace>
       </template>
 
-      <div class="mb-4 text-13px text-#8a6b43">
-        邀请码留空时，后端会自动生成 16 位随机码；批量创建时会连续生成多条随机邀请码，默认长期有效。
-      </div>
+      <NForm class="page-filters" label-placement="left" :show-feedback="false" inline @submit.prevent="searchInvites">
+        <NFormItem label="启用状态">
+          <NSelect v-model:value="filterStatus" :options="enabledOptions" class="w-200px!" />
+        </NFormItem>
+        <div class="filter-actions">
+          <NButton type="primary" attr-type="submit" :loading="loading">查询</NButton>
+          <NButton :disabled="loading" @click="resetFilters">重置</NButton>
+        </div>
+      </NForm>
 
       <div class="min-h-0 sm:flex-1">
         <NDataTable
+          :bordered="false"
           :columns="columns"
           :data="data"
           size="small"

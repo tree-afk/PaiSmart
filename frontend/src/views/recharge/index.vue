@@ -1,9 +1,26 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, h } from 'vue';
+import { computed, h, onMounted, ref } from 'vue';
 import type { DataTableColumns } from 'naive-ui';
-import { NCard, NButton, NInputNumber, NModal, NSpace, NTag, NEmpty, NSpin, NDataTable, NTabs, NTabPane } from 'naive-ui';
+import {
+  NButton,
+  NCard,
+  NDataTable,
+  NEmpty,
+  NInputNumber,
+  NModal,
+  NSpace,
+  NSpin,
+  NTabPane,
+  NTabs,
+  NTag
+} from 'naive-ui';
 import QRCode from 'qrcode.vue';
-import { fetchRechargePackages, fetchCreateRechargeOrder, fetchRechargeOrderDetail, fetchRechargeOrders } from '@/service/api';
+import {
+  fetchCreateRechargeOrder,
+  fetchRechargeOrderDetail,
+  fetchRechargeOrders,
+  fetchRechargePackages
+} from '@/service/api';
 import { useAuthStore } from '@/store/modules/auth';
 
 const TOKEN_UNIT = 10000;
@@ -75,7 +92,7 @@ const getPackages = async () => {
 const getOrders = async () => {
   orderListLoading.value = true;
   try {
-    const status = activeTab.value === 'all' ? undefined : activeTab.value as any;
+    const status = activeTab.value === 'all' ? undefined : (activeTab.value as any);
     const { error, data } = await fetchRechargeOrders(status);
     if (!error && data) {
       orders.value = data;
@@ -215,7 +232,7 @@ const orderColumns = computed<DataTableColumns<Api.Recharge.Order>>(() => [
     key: 'payTime',
     title: '支付时间',
     width: 180,
-    render: row => row.payTime ? new Date(row.payTime).toLocaleString('zh-CN') : '-'
+    render: row => (row.payTime ? new Date(row.payTime).toLocaleString('zh-CN') : '-')
   },
   {
     key: 'createdAt',
@@ -232,53 +249,58 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-auto">
-    <NCard title="余额充值" :bordered="false" size="small" class="card-wrapper">
-    <!-- 余额充值区域 -->
+  <div class="workspace-page min-h-500px flex-col-stretch gap-16px overflow-auto">
+    <NCard title="余额充值" :bordered="false" size="small" class="page-section">
+      <!-- 余额充值区域 -->
       <template #header-extra>
         <NTag type="primary">微信支付</NTag>
       </template>
 
       <NSpin :show="loading">
-        <div v-if="packages.length > 0" class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <div v-if="packages.length > 0" class="grid gap-6 lg:grid-cols-3 md:grid-cols-2">
           <!-- 充值套餐卡片 -->
           <NCard
             v-for="pkg in packages"
             :key="pkg.id"
             hoverable
-            class="cursor-pointer transition-all duration-300"
-            :class="{ 'border-primary border-2': selectedPackageId === pkg.id && !isCustomAmount }"
+            class="package-option"
+            :class="{ 'is-selected': selectedPackageId === pkg.id && !isCustomAmount }"
             @click="selectPackage(pkg.id)"
           >
             <div class="flex flex-col gap-4">
               <div class="flex items-center justify-between">
                 <h3 class="text-xl font-bold">{{ pkg.packageName }}</h3>
-                <NTag v-if="pkg.enabled" type="success" size="small">热销</NTag>
               </div>
 
               <div class="flex items-baseline gap-2">
-                <span class="text-3xl font-bold text-primary">
-                  ¥{{ (pkg.packagePrice / 100).toFixed(2) }}
-                </span>
-                <span class="text-sm text-stone-500">原价 ¥{{ (pkg.packagePrice / 100).toFixed(2) }}</span>
+                <span class="text-3xl text-primary font-bold">¥{{ (pkg.packagePrice / 100).toFixed(2) }}</span>
               </div>
 
               <div class="flex flex-col gap-2 text-sm">
                 <div class="flex items-center gap-2">
                   <icon-solar:like-bold-duotone class="text-primary" />
-                  <span>LLM Token: <strong>{{ formatTokenWan(pkg.llmToken) }}</strong></span>
+                  <span>
+                    LLM Token:
+                    <strong>{{ formatTokenWan(pkg.llmToken) }}</strong>
+                  </span>
                 </div>
                 <div class="flex items-center gap-2">
                   <icon-solar:like-bold-duotone class="text-primary" />
-                  <span>Embedding Token: <strong>{{ formatTokenWan(pkg.embeddingToken) }}</strong></span>
+                  <span>
+                    Embedding Token:
+                    <strong>{{ formatTokenWan(pkg.embeddingToken) }}</strong>
+                  </span>
                 </div>
               </div>
 
-              <NEllipsis :line-clamp="2" class="text-sm text-stone-500">
+              <NEllipsis :line-clamp="2" class="text-muted text-sm">
                 {{ pkg.packageDesc }}
               </NEllipsis>
 
-              <div v-if="packageBenefitLines(pkg.packageBenefit).length" class="flex flex-col gap-2 rounded-lg bg-stone-50 p-3 text-sm text-stone-600">
+              <div
+                v-if="packageBenefitLines(pkg.packageBenefit).length"
+                class="text-muted surface-subtle flex flex-col gap-2 rounded-lg p-3 text-sm"
+              >
                 <div
                   v-for="line in packageBenefitLines(pkg.packageBenefit)"
                   :key="`${pkg.id}-${line}`"
@@ -298,27 +320,25 @@ onMounted(() => {
               >
                 立即充值
               </NButton>
-              <NButton v-else secondary block size="large">
-                选择套餐
-              </NButton>
+              <NButton v-else secondary block size="large">选择套餐</NButton>
             </div>
           </NCard>
 
           <!-- 自定义充值卡片 -->
           <NCard
             hoverable
-            class="cursor-pointer transition-all duration-300"
-            :class="{ 'border-primary border-2': isCustomAmount }"
+            class="package-option"
+            :class="{ 'is-selected': isCustomAmount }"
             @click="selectCustomAmount"
           >
             <div class="flex flex-col gap-4">
               <h3 class="text-xl font-bold">自定义充值</h3>
 
               <div class="flex items-baseline gap-2">
-                <span class="text-3xl font-bold text-primary">灵活充值</span>
+                <span class="text-3xl text-primary font-bold">灵活充值</span>
               </div>
 
-              <div class="flex flex-col gap-2 text-sm text-stone-500">
+              <div class="text-muted flex flex-col gap-2 text-sm">
                 <div>• 充值金额不限</div>
                 <div>• 按比例赠送 Token</div>
                 <div>• 随时充值随时用</div>
@@ -335,9 +355,7 @@ onMounted(() => {
                   size="large"
                   type="text"
                 />
-                <div class="mt-2 text-xs text-stone-400">
-                  建议至少充值 1 元，自动转换为分进行支付
-                </div>
+                <div class="text-muted mt-2 text-xs">建议至少充值 1 元，自动转换为分进行支付</div>
               </div>
 
               <NButton
@@ -349,9 +367,7 @@ onMounted(() => {
               >
                 立即充值 ¥{{ customAmountYuan }}
               </NButton>
-              <NButton v-else secondary block size="large">
-                自定义金额
-              </NButton>
+              <NButton v-else secondary block size="large">自定义金额</NButton>
             </div>
           </NCard>
         </div>
@@ -361,7 +377,7 @@ onMounted(() => {
     </NCard>
 
     <!-- 充值记录列表 -->
-    <NCard title="充值记录" :bordered="false" size="large" class="w-full card-wrapper">
+    <NCard title="充值记录" :bordered="false" size="large" class="page-section w-full">
       <NTabs v-model:value="activeTab" @update:value="handleTabChange">
         <NTabPane name="all" tab="全部订单" />
         <NTabPane name="NOT_PAY" tab="未支付" />
@@ -373,6 +389,7 @@ onMounted(() => {
       <NSpin :show="orderListLoading">
         <NDataTable
           v-if="orders.length > 0"
+          :bordered="false"
           :columns="orderColumns"
           :data="orders"
           :loading="orderListLoading"
@@ -384,20 +401,14 @@ onMounted(() => {
     </NCard>
 
     <!-- 支付二维码弹窗 -->
-    <NModal
-      v-model:show="showPayModal"
-      preset="dialog"
-      title="扫码支付"
-      :show-icon="false"
-      class="w-480px"
-    >
+    <NModal v-model:show="showPayModal" preset="dialog" title="扫码支付" :show-icon="false" class="w-480px">
       <div class="flex flex-col items-center gap-6 py-6">
         <div v-if="orderInfo" class="flex flex-col items-center gap-4">
-          <div class="rounded-lg border-2 border-primary bg-white p-6">
+          <div class="border-2 border-primary rounded-lg bg-white p-6">
             <QRCode
               :value="orderInfo.prePayId"
               :size="240"
-              :level="'H'"
+              level="H"
               include-margin
               render-as="svg"
               foreground="#000000"
@@ -406,19 +417,13 @@ onMounted(() => {
           </div>
           <div class="text-center">
             <p class="text-lg font-semibold">请使用微信扫码支付</p>
-            <p class="mt-2 text-sm text-stone-500">
-              订单号：{{ currentTradeNo }}
-            </p>
-            <p class="mt-1 text-sm text-stone-500">
-              支付金额：¥{{ (getOrderAmount / 100).toFixed(2) }}
-            </p>
+            <p class="text-muted mt-2 text-sm">订单号：{{ currentTradeNo }}</p>
+            <p class="text-muted mt-1 text-sm">支付金额：¥{{ (getOrderAmount / 100).toFixed(2) }}</p>
           </div>
         </div>
 
         <NSpace vertical class="w-full px-8">
-          <NButton type="primary" size="large" block @click="checkPayStatus">
-            我已完成支付
-          </NButton>
+          <NButton type="primary" size="large" block @click="checkPayStatus">我已完成支付</NButton>
         </NSpace>
       </div>
     </NModal>
@@ -426,9 +431,23 @@ onMounted(() => {
 </template>
 
 <style scoped lang="scss">
-.card-wrapper {
-  :deep(.n-card__content) {
-    padding: 24px;
+.package-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 24px;
+}
+.package-option {
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--app-subtle);
+  box-shadow: none;
+  transition: border-color 0.15s;
+  &:hover {
+    border-color: var(--app-border);
+  }
+  &.is-selected {
+    border-color: rgb(var(--primary-color));
   }
 }
 </style>

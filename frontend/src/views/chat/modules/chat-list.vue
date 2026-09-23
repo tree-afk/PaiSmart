@@ -73,35 +73,32 @@ const showEmpty = computed(() => !loading.value && list.value.length === 0);
 
 <template>
   <Suspense>
-    <div class="flex h-0 flex-1 flex-col">
+    <div class="h-0 flex flex-col flex-1">
       <!-- Date filter in header -->
-      <Teleport defer to="#header-extra">
-        <div v-if="!showEmpty" class="flex items-center px-4">
-          <NForm :model="params" label-placement="left" :show-feedback="false" inline>
-            <NFormItem label="时间" size="small">
-              <NDatePicker v-model:value="range" type="daterange" clearable size="small" />
-            </NFormItem>
-          </NForm>
-        </div>
-      </Teleport>
+
+      <div v-if="!showEmpty" class="chat-date-filter flex justify-end px-4 py-3">
+        <NForm :model="params" label-placement="left" :show-feedback="false" inline>
+          <NFormItem label="时间" size="small">
+            <NDatePicker v-model:value="range" type="daterange" clearable size="small" />
+          </NFormItem>
+        </NForm>
+      </div>
 
       <!-- Empty state -->
-      <div v-if="showEmpty" class="flex flex-1 flex-col items-center justify-center gap-4">
-        <div class="flex h-20 w-20 items-center justify-center rounded-2xl bg-[rgb(var(--primary-color)/0.08)]">
+      <div v-if="showEmpty" class="flex flex-col flex-1 items-center justify-center gap-4">
+        <div class="h-20 w-20 flex items-center justify-center rounded-2xl bg-[rgb(var(--primary-color)/0.08)]">
           <icon-material-symbols:chat-outline-rounded class="text-36px text-[rgb(var(--primary-color)/0.5)]" />
         </div>
-        <div class="text-15px font-500 color-#aaa">
+        <div class="text-body text-15px font-500">
           {{ conversationId ? '开始新对话' : '选择或创建一个对话' }}
         </div>
-        <div class="text-12px color-#bbb">
-          在左侧选择一个对话，或点击「新对话」开始
-        </div>
+        <div class="text-muted text-12px">在左侧选择一个对话，或点击「新对话」开始</div>
       </div>
 
       <!-- Message list -->
       <NScrollbar v-else ref="scrollbarRef" class="flex-1">
         <NSpin :show="loading">
-          <div class="mx-auto w-full max-w-[960px] px-4">
+          <div class="mx-auto max-w-[960px] w-full px-4">
             <VueMarkdownItProvider>
               <ChatMessage
                 v-for="(item, index) in list"
@@ -118,4 +115,21 @@ const showEmpty = computed(() => !loading.value && list.value.length === 0);
   </Suspense>
 </template>
 
-<style scoped lang="scss"></style>
+<style scoped lang="scss">
+@media (max-width: 640px) {
+  .chat-date-filter {
+    padding-left: 56px;
+  }
+  .chat-date-filter :deep(.n-form-item-label) {
+    display: none;
+  }
+  .chat-date-filter :deep(.n-form-item) {
+    margin-right: 0;
+    min-width: 0;
+  }
+  .chat-date-filter :deep(.n-date-picker) {
+    min-width: 0;
+    width: 100%;
+  }
+}
+</style>

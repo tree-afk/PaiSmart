@@ -1,10 +1,31 @@
 <script setup lang="tsx">
-import { onMounted, ref } from 'vue';
-import { NButton, NCard, NEmpty } from 'naive-ui';
+import { computed, onMounted, ref } from 'vue';
+import { NButton, NEmpty, useThemeVars } from 'naive-ui';
+
+const themeVars = useThemeVars();
 
 const modelProvidersLoading = ref(false);
 const modelProvidersSaving = ref(false);
 const modelProviders = ref<Api.Admin.ModelProviderSettings | null>(null);
+const selectedScope = ref<'llm' | 'embedding'>('llm');
+const selectedProviders = ref({ llm: '', embedding: '' });
+const currentScope = computed(() => modelProviders.value?.[selectedScope.value]);
+const currentProvider = computed(() => {
+  const scope = currentScope.value;
+  return (
+    scope?.providers.find(item => item.provider === selectedProviders.value[selectedScope.value]) ||
+    scope?.providers.find(item => item.provider === scope.activeProvider) ||
+    scope?.providers[0]
+  );
+});
+const providerOptions = computed(
+  () =>
+    currentScope.value?.providers.map(item => ({
+      label: item.displayName,
+      value: item.provider,
+      disabled: !item.enabled
+    })) || []
+);
 
 function cloneProviderItem(item: Api.Admin.ModelProviderItem): Api.Admin.ModelProviderItem {
   return {
@@ -30,7 +51,9 @@ function cloneModelProviderScope(payload: Api.Admin.ModelProviderScopeSettings):
   };
 }
 
-function cloneModelProviderSettings(payload?: Api.Admin.ModelProviderSettings | null): Api.Admin.ModelProviderSettings | null {
+function cloneModelProviderSettings(
+  payload?: Api.Admin.ModelProviderSettings | null
+): Api.Admin.ModelProviderSettings | null {
   if (!payload) {
     return null;
   }
@@ -114,181 +137,296 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-auto">
-    <NCard :bordered="false" size="small" class="card-wrapper">
-      <template #header>模型 Provider 配置</template>
-      <template #header-extra>
-        <div class="flex items-center gap-2">
-          <span class="text-xs text-stone-400">LLM 保存后新请求立即生效，Embedding 暂不允许危险直切</span>
-        </div>
-      </template>
+  <div class="model-settings overflow-auto">
+    <div class="settings-content">
+      <NTabs v-model:value="selectedScope" type="line" size="large" class="scope-tabs">
+        <NTab name="llm">聊天模型</NTab>
+        <NTab name="embedding">Embedding</NTab>
+      </NTabs>
 
       <NSpin :show="modelProvidersLoading">
-        <div class="mb-4 rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-xs text-stone-500">
-          这里管理平台代付的模型接入配置。API Key 输入为空时保留现有密钥，不会回显明文。Embedding 如果切换 active provider，后端会拦截需要重嵌入的危险变更。
-        </div>
+        <div v-if="currentScope && currentProvider" class="settings-layout">
+          <aside class="provider-navigation">
+            <div class="navigation-label">服务商</div>
+            <nav aria-label="模型服务商" class="provider-list">
+              <button
+                v-for="item in currentScope.providers"
+                :key="`${selectedScope}-${item.provider}`"
+                type="button"
+                class="provider-option"
+                :class="{ 'is-selected': currentProvider.provider === item.provider }"
+                :aria-current="currentProvider.provider === item.provider ? 'true' : undefined"
+                @click="selectedProviders[selectedScope] = item.provider"
+              >
+                <span>{{ item.displayName }}</span>
+                <span v-if="item.provider === currentScope.activeProvider" class="active-dot" aria-label="当前使用" />
+              </button>
+            </nav>
+            <div class="active-provider">
+              <label class="navigation-label" for="active-provider">当前使用</label>
+              <NSelect
+                v-model:value="currentScope.activeProvider"
+                :options="providerOptions"
+                :input-props="{ id: 'active-provider', 'aria-label': '当前使用的服务商' }"
+              />
+            </div>
+          </aside>
 
-        <div v-if="modelProviders" class="grid gap-4">
-          <div class="provider-scope">
-            <div class="provider-scope-header">
-              <div>
-                <div class="provider-scope-title">LLM Provider</div>
-                <div class="provider-scope-sub">聊天请求会按当前 active provider 路由</div>
+          <section class="provider-editor" :aria-label="`${currentProvider.displayName} 配置`">
+            <header class="editor-heading">
+              <h2>{{ currentProvider.displayName }}</h2>
+              <div class="enable-control">
+                <span>{{ currentProvider.enabled ? '已启用' : '未启用' }}</span>
+                <NSwitch v-model:value="currentProvider.enabled" size="small" aria-label="启用服务商" />
               </div>
-              <div class="flex items-center gap-3">
-                <NSelect
-                  v-model:value="modelProviders.llm.activeProvider"
-                  :options="modelProviders.llm.providers.map(item => ({ label: item.displayName, value: item.provider, disabled: !item.enabled }))"
-                  class="min-w-180px"
+            </header>
+
+            <div class="provider-fields">
+              <div class="field">
+                <label for="provider-api-url">API 地址</label>
+                <NInput
+                  v-model:value="currentProvider.apiBaseUrl"
+                  size="large"
+                  :input-props="{ id: 'provider-api-url' }"
                 />
-                <NButton type="primary" size="small" :loading="modelProvidersSaving" @click="submitModelProviders('llm')">
-                  保存 LLM 配置
-                </NButton>
               </div>
-            </div>
-
-            <div class="provider-grid">
-              <div v-for="item in modelProviders.llm.providers" :key="`llm-${item.provider}`" class="provider-card">
-                <div class="provider-card-header">
-                  <div>
-                    <div class="provider-name">{{ item.displayName }}</div>
-                    <div class="provider-code">{{ item.provider }} · {{ item.apiStyle }}</div>
-                  </div>
-                  <NSwitch v-model:value="item.enabled" size="small" />
+              <div class="model-fields" :class="{ 'has-dimension': selectedScope === 'embedding' }">
+                <div class="field">
+                  <label for="provider-model">模型</label>
+                  <NInput v-model:value="currentProvider.model" size="large" :input-props="{ id: 'provider-model' }" />
                 </div>
-                <div class="limit-grid">
-                  <div>
-                    <div class="limit-label">API 地址</div>
-                    <NInput v-model:value="item.apiBaseUrl" />
-                  </div>
-                  <div>
-                    <div class="limit-label">模型</div>
-                    <NInput v-model:value="item.model" />
-                  </div>
-                  <div>
-                    <div class="limit-label">现有密钥</div>
-                    <div class="provider-mask">{{ item.hasApiKey ? item.maskedApiKey : '未配置' }}</div>
-                  </div>
-                  <div>
-                    <div class="limit-label">新 API Key</div>
-                    <NInput v-model:value="item.apiKeyInput" type="password" show-password-on="click" placeholder="留空则保留现有值" />
-                  </div>
-                </div>
-                <div class="mt-3 flex justify-end">
-                  <NButton size="small" secondary @click="testModelProvider('llm', item)">测试连接</NButton>
+                <div v-if="selectedScope === 'embedding'" class="field">
+                  <label for="provider-dimension">维度</label>
+                  <NInputNumber
+                    v-model:value="currentProvider.dimension"
+                    :min="1"
+                    size="large"
+                    :input-props="{ id: 'provider-dimension' }"
+                  />
                 </div>
               </div>
-            </div>
-          </div>
-
-          <div class="provider-scope">
-            <div class="provider-scope-header">
-              <div>
-                <div class="provider-scope-title">Embedding Provider</div>
-                <div class="provider-scope-sub">当前版本只支持配置管理；切 active provider 若需要重嵌入会被后端拦截</div>
-              </div>
-              <div class="flex items-center gap-3">
-                <NSelect
-                  v-model:value="modelProviders.embedding.activeProvider"
-                  :options="modelProviders.embedding.providers.map(item => ({ label: item.displayName, value: item.provider, disabled: !item.enabled }))"
-                  class="min-w-180px"
+              <div class="field">
+                <div class="key-label">
+                  <label for="provider-key">API Key</label>
+                  <span class="saved-key">
+                    {{ currentProvider.hasApiKey ? currentProvider.maskedApiKey : '未配置' }}
+                  </span>
+                </div>
+                <NInput
+                  v-model:value="currentProvider.apiKeyInput"
+                  type="password"
+                  size="large"
+                  show-password-on="click"
+                  placeholder="留空则保留现有值"
+                  :input-props="{ id: 'provider-key', autocomplete: 'new-password' }"
                 />
-                <NButton type="primary" size="small" :loading="modelProvidersSaving" @click="submitModelProviders('embedding')">
-                  保存 Embedding 配置
-                </NButton>
               </div>
             </div>
 
-            <div class="provider-grid">
-              <div v-for="item in modelProviders.embedding.providers" :key="`embedding-${item.provider}`" class="provider-card">
-                <div class="provider-card-header">
-                  <div>
-                    <div class="provider-name">{{ item.displayName }}</div>
-                    <div class="provider-code">{{ item.provider }} · {{ item.apiStyle }}</div>
-                  </div>
-                  <NSwitch v-model:value="item.enabled" size="small" />
-                </div>
-                <div class="limit-grid">
-                  <div>
-                    <div class="limit-label">API 地址</div>
-                    <NInput v-model:value="item.apiBaseUrl" />
-                  </div>
-                  <div>
-                    <div class="limit-label">模型</div>
-                    <NInput v-model:value="item.model" />
-                  </div>
-                  <div>
-                    <div class="limit-label">维度</div>
-                    <NInputNumber v-model:value="item.dimension" :min="1" class="w-full" />
-                  </div>
-                  <div>
-                    <div class="limit-label">现有密钥</div>
-                    <div class="provider-mask">{{ item.hasApiKey ? item.maskedApiKey : '未配置' }}</div>
-                  </div>
-                  <div class="sm:col-span-2">
-                    <div class="limit-label">新 API Key</div>
-                    <NInput v-model:value="item.apiKeyInput" type="password" show-password-on="click" placeholder="留空则保留现有值" />
-                  </div>
-                </div>
-                <div class="mt-3 flex justify-end">
-                  <NButton size="small" secondary @click="testModelProvider('embedding', item)">测试连接</NButton>
-                </div>
-              </div>
-            </div>
-          </div>
+            <footer class="editor-actions">
+              <NButton quaternary @click="testModelProvider(selectedScope, currentProvider)">测试连接</NButton>
+              <NButton type="primary" :loading="modelProvidersSaving" @click="submitModelProviders(selectedScope)">
+                保存{{ selectedScope === 'llm' ? '聊天模型' : 'Embedding' }}配置
+              </NButton>
+            </footer>
+          </section>
         </div>
-        <NEmpty v-else size="small" description="暂未加载到模型配置" />
+        <NEmpty v-else-if="!modelProvidersLoading" description="暂未加载到模型配置" class="empty-state" />
       </NSpin>
-    </NCard>
+    </div>
   </div>
 </template>
 
 <style scoped lang="scss">
-.provider-scope {
-  @apply rounded-3xl border border-stone-200 bg-[linear-gradient(180deg,_rgba(255,255,255,0.98),_rgba(248,250,252,0.94))] p-5 shadow-sm;
+.model-settings {
+  min-height: 560px;
+  background: v-bind('themeVars.cardColor');
+  color: v-bind('themeVars.textColor1');
+  border-radius: 16px;
 }
 
-.provider-scope-header {
-  @apply mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between;
+.settings-content {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 36px 48px 64px;
 }
 
-.provider-scope-title {
-  @apply text-sm font-semibold text-stone-700;
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 56px;
+  padding-top: 36px;
 }
 
-.provider-scope-sub {
-  @apply mt-1 text-xs text-stone-500;
+.navigation-label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: v-bind('themeVars.textColor3');
 }
 
-.provider-grid {
-  @apply grid gap-4 xl:grid-cols-2;
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.provider-card {
-  @apply rounded-2xl border border-stone-200 bg-white p-4 shadow-sm;
+.provider-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: v-bind('themeVars.textColor2');
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+
+  &:hover {
+    background: v-bind('themeVars.hoverColor');
+  }
+
+  &.is-selected {
+    background: v-bind('themeVars.actionColor');
+    color: v-bind('themeVars.primaryColor');
+    font-weight: 600;
+  }
+
+  &:focus-visible {
+    outline: 2px solid v-bind('themeVars.primaryColor');
+    outline-offset: 2px;
+  }
 }
 
-.provider-card-header {
-  @apply mb-4 flex items-start justify-between gap-3;
+.active-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: v-bind('themeVars.primaryColor');
 }
 
-.provider-name {
-  @apply text-sm font-semibold text-stone-700;
+.active-provider {
+  margin-top: 36px;
 }
 
-.provider-code {
-  @apply mt-1 text-xs uppercase tracking-0.08em text-stone-400;
+.editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 32px;
+
+  h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
 }
 
-.provider-mask {
-  @apply rounded-xl border border-dashed border-stone-200 bg-stone-50 px-3 py-2 text-sm text-stone-500;
+.enable-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: v-bind('themeVars.textColor3');
 }
 
-.limit-grid {
-  @apply grid gap-3 sm:grid-cols-2;
+.provider-fields {
+  display: grid;
+  gap: 24px;
 }
 
-.limit-label {
-  @apply mb-2 text-xs font-semibold uppercase tracking-0.08em text-stone-400;
+.field {
+  min-width: 0;
+
+  label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: v-bind('themeVars.textColor2');
+  }
+}
+
+.model-fields {
+  display: grid;
+  gap: 20px;
+
+  &.has-dimension {
+    grid-template-columns: minmax(0, 1fr) 160px;
+  }
+}
+
+.key-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.saved-key {
+  color: v-bind('themeVars.textColor3');
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 36px;
+}
+
+.empty-state {
+  padding: 64px 0;
+}
+
+@media (max-width: 900px) {
+  .settings-content {
+    padding: 28px;
+  }
+
+  .settings-layout {
+    grid-template-columns: 160px minmax(0, 1fr);
+    gap: 28px;
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-content {
+    padding: 24px 20px;
+  }
+
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+    padding-top: 24px;
+  }
+
+  .provider-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .provider-option {
+    width: auto;
+    gap: 12px;
+  }
+
+  .active-provider {
+    margin-top: 20px;
+    max-width: 240px;
+  }
+
+  .model-fields.has-dimension {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>
