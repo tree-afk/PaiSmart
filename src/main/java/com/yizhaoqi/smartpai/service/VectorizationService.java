@@ -4,6 +4,8 @@ import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
+import com.yizhaoqi.smartpai.service.contextual.ChunkContextService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +35,9 @@ public class VectorizationService {
 
     @Autowired
     private ModelProviderConfigService modelProviderConfigService;
+
+    @Autowired
+    private ChunkContextService chunkContextService;
 
     // 每批分块数：分页读分块 → 调 embedding → 立即写 ES，整份文件的向量不在内存里攒着
     @Value("${embedding.api.batch-size:10}")
@@ -66,6 +71,7 @@ public class VectorizationService {
             ModelProviderConfigService.ActiveProviderView provider =
                     modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
             String modelVersion = EmbeddingClient.modelVersionOf(provider);
+            boolean contextual = prepareChunkContexts(fileMd5);
 
             int totalTokens = 0;
             int totalChunks = 0;
@@ -74,7 +80,8 @@ public class VectorizationService {
                 Slice<DocumentVector> slice = documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5, page);
                 List<DocumentVector> chunks = slice.getContent();
                 if (!chunks.isEmpty()) {
-                    totalTokens += embedAndIndexBatch(fileMd5, chunks, userId, orgTag, isPublic, requesterId, provider, modelVersion);
+                    totalTokens += embedAndIndexBatch(fileMd5, chunks, userId, orgTag, isPublic, requesterId, provider,
+                            modelVersion, contextual);
                     totalChunks += chunks.size();
                 }
                 if (!slice.hasNext()) {
@@ -99,6 +106,24 @@ public class VectorizationService {
         }
     }
 
+    /**
+     * 上下文检索开启时，先为还没有说明的分块生成上下文说明（写回 MySQL）；生成失败只记日志，按原文入索引
+     *
+     * @return 本次建索引是否使用上下文说明
+     */
+    private boolean prepareChunkContexts(String fileMd5) {
+        if (chunkContextService == null || !chunkContextService.isEnabled()) {
+            return false;
+        }
+        try {
+            chunkContextService.ensureContexts(fileMd5);
+        } catch (Exception e) {
+            logger.warn("分块上下文说明生成异常，已生成的说明照常使用，其余分块按原文入索引: fileMd5={}, error={}",
+                    fileMd5, e.getMessage());
+        }
+        return true;
+    }
+
     private int embedAndIndexBatch(String fileMd5,
                                    List<DocumentVector> chunks,
                                    String userId,
@@ -106,8 +131,12 @@ public class VectorizationService {
                                    boolean isPublic,
                                    String requesterId,
                                    ModelProviderConfigService.ActiveProviderView provider,
-                                   String modelVersion) {
-        List<String> texts = chunks.stream().map(DocumentVector::getTextContent).toList();
+                                   String modelVersion,
+                                   boolean contextual) {
+        // 上下文说明拼在原文前面做 embedding；ES 里 textContent 仍存原文，说明单独存 chunkContext 参与 BM25
+        List<String> texts = chunks.stream()
+                .map(chunk -> ContextualChunkText.compose(contextual ? chunk.getChunkContext() : null, chunk.getTextContent()))
+                .toList();
         EmbeddingClient.EmbeddingUsageResult embeddingResult = embeddingClient.embedWithProvider(
                 texts, requesterId, EmbeddingClient.UsageType.UPLOAD, provider);
         List<float[]> vectors = embeddingResult.vectors();
@@ -124,6 +153,7 @@ public class VectorizationService {
                     fileMd5,
                     chunk.getChunkId(),
                     chunk.getTextContent(),
+                    contextual ? chunk.getChunkContext() : null,
                     chunk.getPageNumber(),
                     chunk.getAnchorText(),
                     vectors.get(i),

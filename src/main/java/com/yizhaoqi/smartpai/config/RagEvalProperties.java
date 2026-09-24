@@ -34,4 +34,17 @@ public class RagEvalProperties {
     private int maxEvidenceChars = 800;
     /** 生成和评委调用使用的请求方 ID，以 system 开头可豁免用户配额；检索仍以发起评测的管理员身份执行 */
     private String requesterId = "system-eval";
+
+    /** 评委与人工一致率的告警阈值 */
+    private HumanAgreement humanAgreement = new HumanAgreement();
+
+    @Data
+    public static class HumanAgreement {
+        /** 评委与人工在 correct 上的一致率低于该值时，评测汇总标记为需要重新校准 */
+        private double minAgreementRate = 0.8;
+        /** Cohen's kappa 下限，为空时不检查 */
+        private Double minKappa;
+        /** 评委和人工都给出结论的用例少于该数量时只提示样本不足 */
+        private int minComparableCases = 5;
+    }
 }

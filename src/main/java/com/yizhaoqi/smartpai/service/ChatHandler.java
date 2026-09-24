@@ -74,6 +74,9 @@ public class ChatHandler {
     private final KeySetView<String, Boolean> cancelledGenerations = ConcurrentHashMap.newKeySet();
     // 用于存储每次生成任务的引用映射：generationId -> {referenceNumber -> detail}
     private final Map<String, Map<Integer, ReferenceInfo>> generationReferenceMappings = new ConcurrentHashMap<>();
+    // 父子检索时模型看到的是父块：引用校验按父块判断是否被支撑，避免把相邻分块里的内容误判为可疑引用。
+    // 只在内存里保存到本次生成结束，不写进 ReferenceInfo（引用展示和持久化仍只用命中的小分块）
+    private final Map<String, Map<Integer, String>> generationParentContexts = new ConcurrentHashMap<>();
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
@@ -326,6 +329,10 @@ public class ChatHandler {
             }
             String fileLabel = result.getFileName() != null ? result.getFileName() : "unknown";
             mapping.put(firstReferenceNumber + i, buildReferenceInfo(result, fileLabel, userMessage));
+            if (result.getParentContext() != null && !result.getParentContext().isBlank()) {
+                generationParentContexts.computeIfAbsent(generationId, key -> new ConcurrentHashMap<>())
+                        .put(firstReferenceNumber + i, result.getParentContext());
+            }
         }
         if (mapping.isEmpty()) {
             return toolResult.content();
@@ -523,7 +530,9 @@ public class ChatHandler {
             return referenceMappings;
         }
         Map<Integer, String> referenceTexts = new HashMap<>();
-        referenceMappings.forEach((number, detail) -> referenceTexts.put(number, detail.matchedChunkText()));
+        Map<Integer, String> parentContexts = generationParentContexts.getOrDefault(generationId, Map.of());
+        referenceMappings.forEach((number, detail) ->
+                referenceTexts.put(number, parentContexts.getOrDefault(number, detail.matchedChunkText())));
         Map<Integer, CitationVerdict> verdicts = citationVerificationService.verify(userId, answer, referenceTexts);
         if (verdicts.isEmpty()) {
             return referenceMappings;
@@ -558,6 +567,7 @@ public class ChatHandler {
     private void cleanupGenerationState(String generationId, Throwable throwable) {
         responseBuilders.remove(generationId);
         generationReferenceMappings.remove(generationId);
+        generationParentContexts.remove(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
         cancelledGenerations.remove(generationId);

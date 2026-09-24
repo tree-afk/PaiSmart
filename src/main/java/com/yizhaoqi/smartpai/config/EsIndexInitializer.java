@@ -38,6 +38,9 @@ public class EsIndexInitializer implements CommandLineRunner {
     @Autowired
     private ModelProviderConfigService modelProviderConfigService;
 
+    @Autowired
+    private ContextualRetrievalProperties contextualRetrievalProperties;
+
     @Value("${elasticsearch.host}")
     private String host;
 
@@ -84,14 +87,32 @@ public class EsIndexInitializer implements CommandLineRunner {
         Optional<String> aliasTarget = knowledgeIndexManager.currentAliasTarget();
         if (aliasTarget.isPresent()) {
             logger.info("知识库别名 '{}' 已存在，指向索引 {}", KnowledgeIndexNames.ALIAS, aliasTarget.get());
+            syncTemplateFields(aliasTarget.get());
             return;
         }
         if (knowledgeIndexManager.hasLegacyConcreteIndex()) {
             // 兼容旧版本：继续直接使用同名物理索引，第一次 embedding 重建切换时会备份并迁移为别名
             logger.info("检测到旧版物理索引 '{}'，继续使用；下次 embedding 重建时会迁移为别名", KnowledgeIndexNames.ALIAS);
+            syncTemplateFields(KnowledgeIndexNames.ALIAS);
             return;
         }
         createIndex();
+    }
+
+    /**
+     * 给已有索引补上模板里新增的字段（如上下文检索的 chunkContext）。
+     * 上下文检索关闭时写入的 chunkContext 都是 null，不会触发动态映射，补字段失败只告警；
+     * 开启时字段必须先用 IK 分词器建好，否则直接启动失败，避免 ES 用 standard 分词器自动建字段。
+     */
+    private void syncTemplateFields(String index) throws Exception {
+        try {
+            knowledgeIndexManager.ensureTemplateFields(index);
+        } catch (Exception e) {
+            if (contextualRetrievalProperties != null && contextualRetrievalProperties.isEnabled()) {
+                throw e;
+            }
+            logger.warn("为索引 {} 追加 mapping 字段失败，上下文检索未开启，暂不影响使用: {}", index, e.getMessage());
+        }
     }
 
     /**

@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 知识库物理索引与别名的生命周期管理：建版本索引、原子切换别名、旧版同名物理索引迁移。
@@ -89,15 +90,55 @@ public class KnowledgeIndexManager {
     }
 
     String buildMappingJson(int dims, Map<String, String> meta) throws IOException {
-        String template;
-        try (var inputStream = mappingResource.getInputStream()) {
-            template = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        ObjectNode root = (ObjectNode) objectMapper.readTree(template);
+        ObjectNode root = readTemplate();
         ObjectNode mappings = (ObjectNode) root.path("mappings");
         ((ObjectNode) mappings.path("properties").path("vector")).put("dims", dims);
         mappings.set("_meta", objectMapper.valueToTree(meta));
         return objectMapper.writeValueAsString(root);
+    }
+
+    /**
+     * 把模板里新增、而已有索引还没有的字段补进 mapping（ES 允许给已有索引追加新字段，不需要重建）。
+     * 只追加缺失字段、不改已有字段，重复调用是空操作。例如上下文检索的 chunkContext 字段：
+     * 必须在第一次写入之前补上，否则 ES 会按动态映射用 standard 分词器建字段，BM25 就不走 IK 分词了。
+     *
+     * @return 本次补上的字段名
+     */
+    public List<String> ensureTemplateFields(String index) throws IOException {
+        Map<String, Property> existing = esClient.indices().getMapping(g -> g.index(index)).result().values().stream()
+                .findFirst()
+                .map(record -> record.mappings().properties())
+                .orElseThrow(() -> new IllegalStateException("读取索引 mapping 失败: " + index));
+        ObjectNode missing = missingTemplateFields(existing.keySet());
+        if (missing.isEmpty()) {
+            return List.of();
+        }
+        String body = objectMapper.writeValueAsString(objectMapper.createObjectNode().set("properties", missing));
+        esClient.indices().putMapping(p -> p.index(index).withJson(new StringReader(body)));
+        List<String> added = new ArrayList<>();
+        missing.fieldNames().forEachRemaining(added::add);
+        logger.warn("已为知识库索引追加 mapping 字段: index={}, fields={}", index, added);
+        return added;
+    }
+
+    /**
+     * 模板里有、已有索引里没有的字段定义。vector 的维度随模型变化，不参与追加。
+     */
+    ObjectNode missingTemplateFields(Set<String> existingFields) throws IOException {
+        ObjectNode templateProperties = (ObjectNode) readTemplate().path("mappings").path("properties");
+        ObjectNode missing = objectMapper.createObjectNode();
+        templateProperties.fields().forEachRemaining(field -> {
+            if (!existingFields.contains(field.getKey()) && !"vector".equals(field.getKey())) {
+                missing.set(field.getKey(), field.getValue());
+            }
+        });
+        return missing;
+    }
+
+    private ObjectNode readTemplate() throws IOException {
+        try (var inputStream = mappingResource.getInputStream()) {
+            return (ObjectNode) objectMapper.readTree(new String(inputStream.readAllBytes(), StandardCharsets.UTF_8));
+        }
     }
 
     public void deleteIndex(String index) throws IOException {
@@ -138,6 +179,8 @@ public class KnowledgeIndexManager {
         if (!indexExists(targetIndex)) {
             throw new IllegalStateException("目标索引不存在: " + targetIndex);
         }
+        // 回滚目标可能是加字段之前建的旧索引，切过去之前先补齐 mapping，避免新字段被动态映射
+        ensureTemplateFields(targetIndex);
         List<Action> actions = new ArrayList<>();
         if (hasLegacyConcreteIndex()) {
             actions.add(Action.of(a -> a.removeIndex(r -> r.index(KnowledgeIndexNames.ALIAS))));

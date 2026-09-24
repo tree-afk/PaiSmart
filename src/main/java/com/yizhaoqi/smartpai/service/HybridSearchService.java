@@ -7,6 +7,7 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.client.RerankClient;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.HybridSearchProperties;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.entity.SearchResult;
@@ -15,6 +16,7 @@ import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.repository.UserRepository;
+import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.service.search.RrfFusion;
 import org.slf4j.Logger;
@@ -47,11 +49,14 @@ public class HybridSearchService {
     private static final String MODE_TEXT_ONLY = "TEXT_ONLY";
     private static final int ES_MAX_NUM_CANDIDATES = 10000;
     private static final double TEXT_ONLY_MIN_SCORE = 0.3d;
+    static final String FIELD_TEXT = "textContent";
+    static final String FIELD_CHUNK_CONTEXT = "chunkContext";
 
     private final ElasticsearchClient esClient;
     private final EmbeddingClient embeddingClient;
     private final RerankClient rerankClient;
     private final HybridSearchProperties properties;
+    private final ContextualRetrievalProperties contextualProperties;
     private final UserRepository userRepository;
     private final OrgTagCacheService orgTagCacheService;
     private final FileUploadRepository fileUploadRepository;
@@ -61,6 +66,7 @@ public class HybridSearchService {
                                EmbeddingClient embeddingClient,
                                RerankClient rerankClient,
                                HybridSearchProperties properties,
+                               ContextualRetrievalProperties contextualProperties,
                                UserRepository userRepository,
                                OrgTagCacheService orgTagCacheService,
                                FileUploadRepository fileUploadRepository,
@@ -69,6 +75,7 @@ public class HybridSearchService {
         this.embeddingClient = embeddingClient;
         this.rerankClient = rerankClient;
         this.properties = properties;
+        this.contextualProperties = contextualProperties;
         this.userRepository = userRepository;
         this.orgTagCacheService = orgTagCacheService;
         this.fileUploadRepository = fileUploadRepository;
@@ -160,8 +167,9 @@ public class HybridSearchService {
         }
 
         try {
+            // 上下文检索开启时 rerank 也看"说明 + 原文"，与 embedding / BM25 的索引文本一致
             List<String> documents = candidates.stream()
-                    .map(c -> truncate(c.item().source().getTextContent(), cfg.getMaxDocumentChars()))
+                    .map(c -> truncate(rerankText(c.item().source()), cfg.getMaxDocumentChars()))
                     .toList();
             List<RerankClient.RerankHit> ranked = rerankClient.rerank(query, documents);
             List<SearchResult> results = ranked.stream()
@@ -201,13 +209,30 @@ public class HybridSearchService {
                 .index(KnowledgeIndexNames.ALIAS)
                 .source(src -> src.filter(f -> f.excludes("vector")))
                 .query(q -> q.bool(b -> {
-                    b.must(m -> m.match(ma -> ma.field("textContent").query(query)));
+                    b.must(keywordQuery(query));
                     if (filter != null) {
                         b.filter(filter);
                     }
                     return b;
                 }))
                 .size(window));
+    }
+
+    /**
+     * BM25 关键词查询。上下文检索开启时用 combined_fields 把 chunkContext 和 textContent 当成一个字段
+     * （BM25F），效果等同于对"说明 + 原文"的拼接文本打分，而原文字段仍保持干净，只用于展示和引用；
+     * 两个字段必须使用同一分词器（mapping 里都是 IK）。没有说明的旧分块只在 textContent 上匹配。
+     */
+    Query keywordQuery(String query) {
+        if (contextualProperties != null && contextualProperties.isEnabled()) {
+            return Query.of(q -> q.combinedFields(c -> c.query(query).fields(FIELD_CHUNK_CONTEXT, FIELD_TEXT)));
+        }
+        return Query.of(q -> q.match(m -> m.field(FIELD_TEXT).query(query)));
+    }
+
+    private String rerankText(EsDocument doc) {
+        boolean contextual = contextualProperties != null && contextualProperties.isEnabled();
+        return ContextualChunkText.compose(contextual ? doc.getChunkContext() : null, doc.getTextContent());
     }
 
     SearchRequest buildKnnRequest(List<Float> queryVector, Query filter, int window) {
@@ -263,7 +288,7 @@ public class HybridSearchService {
             s.index(KnowledgeIndexNames.ALIAS)
                     .source(src -> src.filter(f -> f.excludes("vector")))
                     .query(q -> q.bool(b -> {
-                        b.must(m -> m.match(ma -> ma.field("textContent").query(query)));
+                        b.must(keywordQuery(query));
                         if (filter != null) {
                             b.filter(filter);
                         }

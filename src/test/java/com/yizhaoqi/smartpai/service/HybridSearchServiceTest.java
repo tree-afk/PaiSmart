@@ -8,6 +8,7 @@ import co.elastic.clients.elasticsearch.core.search.Hit;
 import co.elastic.clients.elasticsearch.core.search.TotalHitsRelation;
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.client.RerankClient;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.HybridSearchProperties;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.entity.SearchResult;
@@ -43,6 +44,7 @@ class HybridSearchServiceTest {
     private final OrgTagCacheService orgTagCacheService = mock(OrgTagCacheService.class);
     private final FileUploadRepository fileUploadRepository = mock(FileUploadRepository.class);
     private final HybridSearchProperties properties = new HybridSearchProperties();
+    private final ContextualRetrievalProperties contextualProperties = new ContextualRetrievalProperties();
     private final List<SearchRequest> capturedRequests = Collections.synchronizedList(new ArrayList<>());
 
     private HybridSearchService service;
@@ -52,7 +54,7 @@ class HybridSearchServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        service = new HybridSearchService(esClient, embeddingClient, rerankClient, properties,
+        service = new HybridSearchService(esClient, embeddingClient, rerankClient, properties, contextualProperties,
                 userRepository, orgTagCacheService, fileUploadRepository, Runnable::run);
 
         User user = new User();
@@ -178,6 +180,38 @@ class HybridSearchServiceTest {
 
         assertEquals(2, results.size());
         assertTrue(results.stream().allMatch(r -> "TEXT_ONLY".equals(r.getRetrievalMode())));
+    }
+
+    @Test
+    void bm25MatchesOnlyTextContentWhenContextualRetrievalDisabled() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of());
+
+        service.searchWithPermission("q", "7", 5);
+
+        SearchRequest bm25 = capturedRequests.stream().filter(r -> r.knn().isEmpty()).findFirst().orElseThrow();
+        Query keyword = bm25.query().bool().must().get(0);
+        assertTrue(keyword.isMatch());
+        assertEquals("textContent", keyword.match().field());
+    }
+
+    @Test
+    void contextualRetrievalScoresContextPlusChunkButReturnsOriginalText() {
+        contextualProperties.setEnabled(true);
+        EsDocument withContext = new EsDocument("ctx", "md5", 9, "营收比上季度增长 3%", "出自 ACME 2023 年二季度财报的营收部分。",
+                null, null, null, "v1", "7", "dept-a", false);
+        bm25Hits = List.of(Hit.of(h -> h.index("knowledge_base_v1").id("ctx").score(1.0).source(withContext)));
+        knnHits = List.of();
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(new RerankClient.RerankHit(0, 0.9)));
+
+        List<SearchResult> results = service.searchWithPermission("ACME 二季度营收", "7", 5);
+
+        SearchRequest bm25 = capturedRequests.stream().filter(r -> r.knn().isEmpty()).findFirst().orElseThrow();
+        Query keyword = bm25.query().bool().must().get(0);
+        assertTrue(keyword.isCombinedFields(), "说明和原文当成一个字段算 BM25");
+        assertEquals(List.of("chunkContext", "textContent"), keyword.combinedFields().fields());
+        verify(rerankClient).rerank("ACME 二季度营收", List.of("出自 ACME 2023 年二季度财报的营收部分。\n\n营收比上季度增长 3%"));
+        assertEquals("营收比上季度增长 3%", results.get(0).getTextContent(), "展示和引用只用原文");
+        assertEquals("营收比上季度增长 3%", results.get(0).getMatchedChunkText());
     }
 
     @Test

@@ -10,11 +10,13 @@ import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
+import com.yizhaoqi.smartpai.service.search.ParentContextExpander;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +36,7 @@ public class AgentToolRegistry {
     private final StringRedisTemplate stringRedisTemplate;
     private final ElasticsearchClient elasticsearchClient;
     private final FileUploadRepository fileUploadRepository;
+    private final ParentContextExpander parentContextExpander;
     private final List<AgentTool> tools;
     private final Map<String, ToolHandler> handlers;
 
@@ -41,12 +44,14 @@ public class AgentToolRegistry {
                              DeepSeekClient deepSeekClient,
                              StringRedisTemplate stringRedisTemplate,
                              ElasticsearchClient elasticsearchClient,
-                             FileUploadRepository fileUploadRepository) {
+                             FileUploadRepository fileUploadRepository,
+                             ParentContextExpander parentContextExpander) {
         this.hybridSearchService = hybridSearchService;
         this.deepSeekClient = deepSeekClient;
         this.stringRedisTemplate = stringRedisTemplate;
         this.elasticsearchClient = elasticsearchClient;
         this.fileUploadRepository = fileUploadRepository;
+        this.parentContextExpander = parentContextExpander;
         this.tools = List.of(
                 searchKnowledgeTool(),
                 generateSummaryTool(),
@@ -93,7 +98,8 @@ public class AgentToolRegistry {
         String query = getRequiredString(arguments, "query");
         int topK = getInt(arguments, "topK", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        List<SearchResult> results = hybridSearchService.searchWithPermission(query, userId, topK);
+        // 小分块检索、父块交给模型：引用和证据片段仍指向命中的小分块
+        List<SearchResult> results = expandParents(hybridSearchService.searchWithPermission(query, userId, topK));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("query", query);
         data.put("topK", topK);
@@ -108,7 +114,7 @@ public class AgentToolRegistry {
         String topic = getRequiredString(arguments, "topic");
         int maxDocs = getInt(arguments, "maxDocs", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
 
-        List<SearchResult> results = hybridSearchService.searchWithPermission(topic, userId, maxDocs);
+        List<SearchResult> results = expandParents(hybridSearchService.searchWithPermission(topic, userId, maxDocs));
         String summary = deepSeekClient.summarize(userId, topic, results, onChunk);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("topic", topic);
@@ -120,6 +126,10 @@ public class AgentToolRegistry {
                 + "检索片段数：" + results.size() + "\n\n"
                 + summary;
         return new ToolExecutionResult("generate_summary", true, content, data, onChunk != null);
+    }
+
+    private List<SearchResult> expandParents(List<SearchResult> results) {
+        return parentContextExpander == null ? results : parentContextExpander.expand(results);
     }
 
     private ToolExecutionResult executeSubmitFeedback(Map<String, Object> arguments,
@@ -260,9 +270,15 @@ public class AgentToolRegistry {
                 .append("请基于这些片段回答用户问题；不得声称知识库暂无相关信息。")
                 .append("如果片段信息不足，请说明“基于已检索片段只能确认……”并标注来源编号；")
                 .append("片段没有覆盖的内容明确说明资料中没有，不要为缺乏依据的句子硬凑来源编号。");
+        if (results.stream().anyMatch(r -> r != null && hasParent(r))) {
+            output.append("标有“上下文”的片段包含命中分块及其前后相邻内容，引用其中任何内容都使用该片段的编号。");
+        }
+        // 多个命中共用同一个父块时，父块只在第一次出现时给出
+        Map<String, Integer> emittedParents = new HashMap<>();
         for (int i = 0; i < results.size(); i++) {
             SearchResult result = results.get(i);
-            output.append("\n\n[").append(firstReferenceNumber + i).append("] ");
+            int referenceNumber = firstReferenceNumber + i;
+            output.append("\n\n[").append(referenceNumber).append("] ");
             if (result.getFileName() != null && !result.getFileName().isBlank()) {
                 output.append(result.getFileName()).append(" ");
             }
@@ -274,10 +290,25 @@ public class AgentToolRegistry {
             if (result.getScore() != null) {
                 output.append(", score=").append(String.format(Locale.ROOT, "%.4f", result.getScore()));
             }
-            output.append(")\n")
-                    .append(limitText(result.getMatchedChunkText() != null ? result.getMatchedChunkText() : result.getTextContent(), 1200));
+            output.append(")\n");
+            String matched = result.getMatchedChunkText() != null ? result.getMatchedChunkText() : result.getTextContent();
+            if (!hasParent(result)) {
+                output.append(limitText(matched, 1200));
+                continue;
+            }
+            Integer earlier = emittedParents.putIfAbsent(result.getParentKey(), referenceNumber);
+            if (earlier == null) {
+                output.append("上下文（命中分块及前后相邻内容）：\n").append(result.getParentContext());
+            } else {
+                output.append("命中分块：").append(limitText(matched, 300))
+                        .append("\n（该分块所在的上下文已在 [").append(earlier).append("] 中给出）");
+            }
         }
         return output.toString();
+    }
+
+    private static boolean hasParent(SearchResult result) {
+        return result.getParentContext() != null && !result.getParentContext().isBlank() && result.getParentKey() != null;
     }
 
     private String formatKnowledgeStats(Map<String, Object> data) {

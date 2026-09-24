@@ -18,6 +18,9 @@ public interface DocumentVectorRepository extends JpaRepository<DocumentVector, 
     // 分页读取分块，向量化时一批一批处理，不把整份文件的分块一次性读进内存
     Slice<DocumentVector> findByFileMd5OrderByChunkIdAsc(String fileMd5, Pageable pageable);
 
+    // 按 chunkId 区间读取相邻分块：上下文检索取文档窗口、父子检索取父块都用它，避免整份文件读进内存
+    List<DocumentVector> findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc(String fileMd5, Integer fromChunkId, Integer toChunkId);
+
     long countByFileMd5(String fileMd5);
 
     long countByFileMd5AndPageNumberIsNotNull(String fileMd5);

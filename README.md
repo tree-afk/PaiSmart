@@ -129,6 +129,43 @@ frontend/
 - 可以根据用户的查询检索相关文档
 - 为 LLM 提供完整的上下文，从而生成更准确、基于文档的响应内容
 
+### 上下文检索与父子检索
+
+分块切小了，检索更精确，但一块文本离开原文可能读不懂，比如只写着“营收比上季度增长 3%”，没说是哪家公司、哪个季度。派聪明在入库和问答两头各补一步。
+
+**上下文检索（入库时，默认关闭）**：参考 Anthropic 2024 年 9 月公开的 Contextual Retrieval。向量化之前，让 LLM 给每个分块写一两句上下文说明，交代它出自哪份文档、属于哪个部分。
+
+- 文档可能比模型上下文长得多，所以只给有界窗口：文档标题 + 本批分块前后各 `neighbour-chunks` 个相邻分块，总长度不超过 `max-window-chars`。
+- 每 `chunks-per-request` 个相邻分块合并成一次 LLM 调用，同一段窗口只发送一次；最多 `concurrency` 个调用同时在途，调用方为 `system-contextual`，受全局 LLM Token 预算约束，触发限流时按配置退避重试。system 提示词固定、user 消息以文档标题开头，DeepSeek、通义千问等接口的自动前缀缓存可以命中。
+- 说明写入 `document_vectors.chunk_context`。embedding 用“说明 + 空行 + 原文”；ES 里 `textContent` 仍存原文，说明单独存 `chunkContext` 字段，BM25 用 `combined_fields` 把两个字段当成一个字段打分；rerank 也看“说明 + 原文”。展示、引用、证据片段只用原文。
+- 某一批调用失败或模型漏掉某个分块，只记日志，这些分块按原文入索引，不影响入库。已有说明的分块不会重复生成。
+- embedding 模型重建（`/api/v1/admin/knowledge-index/rebuild`）复用 MySQL 里已生成的说明，不重新调用 LLM；单文件重建索引会重新解析、重新生成说明。给已有知识库补说明，对文件逐个重建索引即可。
+- 启动时会给已有的线上索引追加 `chunkContext` 字段（ES 允许给已有索引加新字段，不需要重建），切换别名或回滚到旧索引前也会先补齐。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `knowledge.contextual-retrieval.enabled` | `false` | 总开关（`KNOWLEDGE_CONTEXTUAL_RETRIEVAL_ENABLED`） |
+| `knowledge.contextual-retrieval.chunks-per-request` | `8` | 一次 LLM 调用处理的相邻分块数 |
+| `knowledge.contextual-retrieval.neighbour-chunks` | `2` | 窗口在本批分块前后各带几个相邻分块 |
+| `knowledge.contextual-retrieval.max-window-chars` | `6000` | 送给 LLM 的窗口最大字符数 |
+| `knowledge.contextual-retrieval.max-context-chars` | `200` | 单个分块说明的最大字符数 |
+| `knowledge.contextual-retrieval.concurrency` | `2` | 同时在途的 LLM 调用数（所有文件共享） |
+| `knowledge.contextual-retrieval.rate-limit-retries` / `rate-limit-backoff-seconds` | `2` / `10` | 触发全局 LLM 预算限流时的重试 |
+
+**父子检索（问答时，默认开启）**：检索仍然在小分块上做，命中以后把分块连同同一文件里前后相邻的分块（父块）交给模型。
+
+- 父块从命中分块开始向后、向前交替扩展，最多各 `neighbour-chunks` 个，单个父块不超过 `max-chars-per-hit`，相邻分块之间的切分重叠会去掉。
+- 多个命中落在同一个父块里时，父块只在第一次出现时给出，后面的编号只附命中分块并注明“上下文已在 [n] 中给出”；所有父块的总长度受 `max-total-chars` 约束，用完后剩余命中只给小分块。
+- 引用编号、页码、锚点和证据片段仍然指向命中的小分块。开启引用校验时，按模型实际看到的父块判断引用是否被支撑。
+- `search_knowledge`、`generate_summary` 两个工具和离线评测的生成、评委环节用同一套父块，检索指标仍按小分块计算。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `search.parent-context.enabled` | `true` | 总开关（`SEARCH_PARENT_CONTEXT_ENABLED`） |
+| `search.parent-context.neighbour-chunks` | `1` | 命中分块前后各最多扩展几个相邻分块 |
+| `search.parent-context.max-chars-per-hit` | `1500` | 单个父块最大字符数 |
+| `search.parent-context.max-total-chars` | `6000` | 一次检索所有父块的总字符数上限 |
+
 ### 企业级多租户
 
 派聪明通过组织标签支持多租户架构。每个用户可以创建或加入一个或多个组织，每个组织可以拥有独立的知识库和文档管理。这样，企业可以在同一系统中管理多个团队或部门的知识库，而无需担心数据混淆或权限问题。
@@ -184,15 +221,22 @@ frontend/
 | `eval.generation-max-tokens` / `eval.judge-max-tokens` | `1500` / `300` | 生成和评委的最大输出 tokens |
 | `eval.generation-timeout-seconds` / `eval.judge-timeout-seconds` | `90` / `60` | 生成和评委的超时 |
 | `eval.requester-id` | `system-eval` | 生成和评委调用的请求方，以 system 开头不占用户配额 |
+| `eval.human-agreement.min-agreement-rate` | `0.8` | 评委与人工一致率低于该值时告警（`EVAL_HUMAN_AGREEMENT_MIN_RATE`） |
+| `eval.human-agreement.min-kappa` | 空 | Cohen's kappa 下限，为空时不检查 |
+| `eval.human-agreement.min-comparable-cases` | `5` | 可比较用例少于该数量时只提示样本不足 |
 
 管理员接口：
 
 - `POST /api/v1/admin/eval/run`（JSON）：`{"datasetPath": "classpath:eval/sample-eval.jsonl", "topK": 5, "label": "chunk-512"}`，也可以用 `jsonl` 字段直接传内容
 - `POST /api/v1/admin/eval/run`（multipart）：`file` 为 JSONL 文件，可带 `topK`、`label` 参数
 - `GET /api/v1/admin/eval/runs`、`GET /api/v1/admin/eval/runs/latest`、`GET /api/v1/admin/eval/runs/{runId}` 查看进度、汇总指标和报告路径
-- `GET /api/v1/admin/eval/runs/{runId}/report` 获取完整报告 JSON
+- `GET /api/v1/admin/eval/runs/{runId}/report` 获取完整报告 JSON，录入过人工判定时附带 `humanReview`
+- `POST /api/v1/admin/eval/runs/{runId}/human-reviews`：录入人工判定，`{"reviews": [{"caseId": "c1", "correct": true, "score": 4, "note": "..."}]}`，`score`（1-5）和 `note` 可选，同一用例重复提交以最后一次为准
+- `GET /api/v1/admin/eval/runs/{runId}/human-reviews` 查看人工判定和评委与人工一致率
 
 同一时间只运行一个评测任务，任务状态保存在内存里（最近 20 个），报告文件保存在磁盘上。
+
+**评委校准**：评委模型有自己的偏差，要定期抽一批让人工也判一遍。人工判定保存在报告旁边的 `{报告文件名}.human-reviews.json` 里，报告文件本身不改，重启后按 runId 在 `eval.output-dir` 里找回。只比较评委和人工都给出 `correct` 的用例，计算一致率和 Cohen's kappa（扣掉碰巧一致的部分，正确率很高或很低时一致率会虚高）；人工也打了分的用例额外给出评委分与人工分的平均绝对差。结果挂在任务状态的 `humanAgreement` 上：一致率低于 `min-agreement-rate`（或 kappa 低于 `min-kappa`）时 `status` 为 `NEEDS_RECALIBRATION` 并带 `warning`，说明评分标准要改或者评委模型已经不可靠，本次准确率和平均分不能直接采信，`disagreementCaseIds` 列出分歧用例。
 
 ## 前置环境
 

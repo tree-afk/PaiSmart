@@ -4,6 +4,7 @@ import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.contextual.ChunkContextService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -38,6 +39,7 @@ class VectorizationServiceTest {
     private final ElasticsearchService elasticsearchService = mock(ElasticsearchService.class);
     private final DocumentVectorRepository documentVectorRepository = mock(DocumentVectorRepository.class);
     private final ModelProviderConfigService providerConfig = mock(ModelProviderConfigService.class);
+    private final ChunkContextService chunkContextService = mock(ChunkContextService.class);
     private final VectorizationService service = new VectorizationService();
 
     @BeforeEach
@@ -46,6 +48,7 @@ class VectorizationServiceTest {
         ReflectionTestUtils.setField(service, "elasticsearchService", elasticsearchService);
         ReflectionTestUtils.setField(service, "documentVectorRepository", documentVectorRepository);
         ReflectionTestUtils.setField(service, "modelProviderConfigService", providerConfig);
+        ReflectionTestUtils.setField(service, "chunkContextService", chunkContextService);
         ReflectionTestUtils.setField(service, "batchSize", 10);
         when(providerConfig.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING)).thenReturn(PROVIDER);
         when(embeddingClient.embedWithProvider(anyList(), eq("u1"), eq(EmbeddingClient.UsageType.UPLOAD), eq(PROVIDER)))
@@ -100,6 +103,56 @@ class VectorizationServiceTest {
     }
 
     @Test
+    void contextualRetrievalGeneratesContextsFirstThenEmbedsContextPlusChunk() {
+        when(chunkContextService.isEnabled()).thenReturn(true);
+        stubChunks(3, "出自《部署手册》端口一节。");
+
+        service.vectorizeWithUsage("md5", "u1", "org", true, "u1");
+
+        InOrder order = inOrder(chunkContextService, documentVectorRepository);
+        order.verify(chunkContextService).ensureContexts("md5");
+        order.verify(documentVectorRepository).findByFileMd5OrderByChunkIdAsc(eq("md5"), any(Pageable.class));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> texts = ArgumentCaptor.forClass(List.class);
+        verify(embeddingClient).embedWithProvider(texts.capture(), eq("u1"), any(), eq(PROVIDER));
+        assertEquals("出自《部署手册》端口一节。\n\ntext-0", texts.getValue().get(0));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<EsDocument>> batches = ArgumentCaptor.forClass(List.class);
+        verify(elasticsearchService).bulkIndex(batches.capture());
+        EsDocument first = batches.getValue().get(0);
+        assertEquals("text-0", first.getTextContent(), "原文单独保存，展示和引用不带生成的说明");
+        assertEquals("出自《部署手册》端口一节。", first.getChunkContext());
+    }
+
+    @Test
+    void contextGenerationFailureStillIndexesChunks() {
+        when(chunkContextService.isEnabled()).thenReturn(true);
+        when(chunkContextService.ensureContexts("md5")).thenThrow(new IllegalStateException("llm down"));
+        stubChunks(3);
+
+        VectorizationService.VectorizationUsageResult result = service.vectorizeWithUsage("md5", "u1", "org", true, "u1");
+
+        assertEquals(3, result.actualChunkCount());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> texts = ArgumentCaptor.forClass(List.class);
+        verify(embeddingClient).embedWithProvider(texts.capture(), eq("u1"), any(), eq(PROVIDER));
+        assertEquals("text-0", texts.getValue().get(0));
+    }
+
+    @Test
+    void disabledContextualRetrievalIgnoresStoredContexts() {
+        stubChunks(2, "旧说明");
+
+        service.vectorizeWithUsage("md5", "u1", "org", true, "u1");
+
+        verify(chunkContextService, never()).ensureContexts(any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<EsDocument>> batches = ArgumentCaptor.forClass(List.class);
+        verify(elasticsearchService).bulkIndex(batches.capture());
+        assertEquals(null, batches.getValue().get(0).getChunkContext());
+    }
+
+    @Test
     void noChunksIndexesNothing() {
         stubChunks(0);
 
@@ -110,11 +163,18 @@ class VectorizationServiceTest {
     }
 
     private void stubChunks(int total) {
+        stubChunks(total, null);
+    }
+
+    private void stubChunks(int total, String context) {
         when(documentVectorRepository.findByFileMd5OrderByChunkIdAsc(eq("md5"), any(Pageable.class))).thenAnswer(invocation -> {
             Pageable pageable = invocation.getArgument(1);
             int from = (int) pageable.getOffset();
             int to = Math.min(from + pageable.getPageSize(), total);
-            List<DocumentVector> content = IntStream.range(Math.min(from, total), to).mapToObj(VectorizationServiceTest::chunk).toList();
+            List<DocumentVector> content = IntStream.range(Math.min(from, total), to)
+                    .mapToObj(VectorizationServiceTest::chunk)
+                    .peek(chunk -> chunk.setChunkContext(context))
+                    .toList();
             return new SliceImpl<>(content, pageable, to < total);
         });
     }

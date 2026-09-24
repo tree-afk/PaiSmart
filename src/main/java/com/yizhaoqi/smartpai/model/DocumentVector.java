@@ -32,6 +32,13 @@ public class DocumentVector {
     @Column(name = "anchor_text", length = 512)
     private String anchorText;
 
+    /**
+     * 上下文检索（Contextual Retrieval）为该分块生成的一两句上下文说明，只参与 embedding 和 BM25，
+     * 不作为原文展示或引用。为空表示未开启、尚未生成或生成失败（按原文入索引）。
+     */
+    @Column(name = "chunk_context", columnDefinition = "TEXT")
+    private String chunkContext;
+
     @Column(length = 32)
     private String modelVersion;
     

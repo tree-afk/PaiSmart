@@ -2,7 +2,9 @@ package com.yizhaoqi.smartpai.service.eval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.HybridSearchProperties;
+import com.yizhaoqi.smartpai.config.ParentContextProperties;
 import com.yizhaoqi.smartpai.config.RagEvalProperties;
 import com.yizhaoqi.smartpai.exception.CustomException;
 import jakarta.annotation.PreDestroy;
@@ -34,6 +36,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * 离线 RAG 评测任务：异步逐条跑用例，汇总 Recall@K / MRR / 评委平均分 / 准确率和问题归因，报告写成 JSON 文件。
@@ -48,10 +51,13 @@ public class RagEvalService {
     private static final Pattern UNSAFE_LABEL_CHARS = Pattern.compile("[^\\w\\-\\u4e00-\\u9fa5]+");
     private static final DateTimeFormatter FILE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault());
     private static final int MAX_KEPT_RUNS = 20;
+    private static final Pattern SAFE_RUN_ID = Pattern.compile("[A-Za-z0-9]{1,32}");
 
     private final RagEvalCaseRunner caseRunner;
     private final RagEvalProperties properties;
     private final HybridSearchProperties searchProperties;
+    private final ParentContextProperties parentContextProperties;
+    private final ContextualRetrievalProperties contextualProperties;
     private final ObjectMapper objectMapper;
     private final ExecutorService executor;
     private final Map<String, RunProgress> runs = Collections.synchronizedMap(new LinkedHashMap<>());
@@ -61,19 +67,25 @@ public class RagEvalService {
     public RagEvalService(RagEvalCaseRunner caseRunner,
                           RagEvalProperties properties,
                           HybridSearchProperties searchProperties,
+                          ParentContextProperties parentContextProperties,
+                          ContextualRetrievalProperties contextualProperties,
                           ObjectMapper objectMapper) {
-        this(caseRunner, properties, searchProperties, objectMapper,
+        this(caseRunner, properties, searchProperties, parentContextProperties, contextualProperties, objectMapper,
                 Executors.newSingleThreadExecutor(r -> new Thread(r, "rag-eval")));
     }
 
     RagEvalService(RagEvalCaseRunner caseRunner,
                    RagEvalProperties properties,
                    HybridSearchProperties searchProperties,
+                   ParentContextProperties parentContextProperties,
+                   ContextualRetrievalProperties contextualProperties,
                    ObjectMapper objectMapper,
                    ExecutorService executor) {
         this.caseRunner = caseRunner;
         this.properties = properties;
         this.searchProperties = searchProperties;
+        this.parentContextProperties = parentContextProperties;
+        this.contextualProperties = contextualProperties;
         this.objectMapper = objectMapper;
         this.executor = executor;
     }
@@ -189,14 +201,47 @@ public class RagEvalService {
     }
 
     public Optional<JsonNode> readReport(String runId) {
-        RunProgress progress = runs.get(runId);
-        if (progress == null || progress.reportPath == null) {
+        Optional<Path> reportPath = findReportPath(runId);
+        if (reportPath.isEmpty()) {
             return Optional.empty();
         }
         try {
-            return Optional.of(objectMapper.readTree(Paths.get(progress.reportPath).toFile()));
+            return Optional.of(objectMapper.readTree(reportPath.get().toFile()));
         } catch (Exception e) {
             throw new CustomException("读取评测报告失败: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /**
+     * 报告文件路径。任务状态只在内存里保留最近 20 个，重启后按文件名（..._{runId}.json）在输出目录里找
+     */
+    public Optional<Path> findReportPath(String runId) {
+        if (runId == null || !SAFE_RUN_ID.matcher(runId).matches()) {
+            return Optional.empty();
+        }
+        RunProgress progress = runs.get(runId);
+        if (progress != null) {
+            return Optional.ofNullable(progress.reportPath).map(Paths::get);
+        }
+        Path dir = Paths.get(properties.getOutputDir()).toAbsolutePath().normalize();
+        if (!Files.isDirectory(dir)) {
+            return Optional.empty();
+        }
+        String suffix = "_" + runId + ".json";
+        try (Stream<Path> files = Files.list(dir)) {
+            return files.filter(file -> file.getFileName().toString().endsWith(suffix)).findFirst();
+        } catch (Exception e) {
+            throw new CustomException("查找评测报告失败: " + e.getMessage(), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    /**
+     * 人工判定更新后，把评委与人工一致率挂到内存里的任务状态上，列表和详情接口直接可见
+     */
+    void recordHumanAgreement(String runId, JudgeHumanAgreement agreement) {
+        RunProgress progress = runs.get(runId);
+        if (progress != null) {
+            progress.humanAgreement = agreement;
         }
     }
 
@@ -236,6 +281,14 @@ public class RagEvalService {
         config.put("rerankModel", searchProperties.getRerank().getModel());
         config.put("rerankScoreThreshold", searchProperties.getRerank().getScoreThreshold());
         config.put("rrfK", searchProperties.getRrfK());
+        if (parentContextProperties != null) {
+            config.put("parentContextEnabled", parentContextProperties.isEnabled());
+            config.put("parentContextNeighbourChunks", parentContextProperties.getNeighbourChunks());
+            config.put("parentContextMaxCharsPerHit", parentContextProperties.getMaxCharsPerHit());
+        }
+        if (contextualProperties != null) {
+            config.put("contextualRetrievalEnabled", contextualProperties.isEnabled());
+        }
         config.put("humanReviewSampleRate", properties.getHumanReviewSampleRate());
         config.put("randomSeed", properties.getRandomSeed());
         return config;
@@ -274,6 +327,8 @@ public class RagEvalService {
             String operator,
             String reportPath,
             EvalReport.EvalSummary summary,
+            /* 评委与人工一致率，录入人工判定后才有；低于阈值时 status = NEEDS_RECALIBRATION 并带 warning */
+            JudgeHumanAgreement humanAgreement,
             String message,
             Instant startedAt,
             Instant finishedAt
@@ -292,6 +347,7 @@ public class RagEvalService {
         private volatile int completedCases;
         private volatile String reportPath;
         private volatile EvalReport.EvalSummary summary;
+        private volatile JudgeHumanAgreement humanAgreement;
         private volatile String message;
         private volatile Instant finishedAt;
 
@@ -319,7 +375,7 @@ public class RagEvalService {
 
         RunStatus snapshot() {
             return new RunStatus(runId, label, datasetSource, topK, state, totalCases, completedCases, operator,
-                    reportPath, summary, message, startedAt, finishedAt);
+                    reportPath, summary, humanAgreement, message, startedAt, finishedAt);
         }
     }
 }

@@ -1,6 +1,7 @@
 package com.yizhaoqi.smartpai.service.index;
 
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.EmbeddingReindexProperties;
 import com.yizhaoqi.smartpai.consumer.FileProcessingListenerGate;
 import com.yizhaoqi.smartpai.entity.EsDocument;
@@ -13,6 +14,7 @@ import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.service.ElasticsearchService;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService.ActiveProviderView;
+import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +53,7 @@ public class EmbeddingReindexService {
     private final DocumentVectorRepository documentVectorRepository;
     private final FileProcessingListenerGate listenerGate;
     private final EmbeddingReindexProperties properties;
+    private final ContextualRetrievalProperties contextualProperties;
     private final ExecutorService executor;
     private final AtomicReference<RebuildProgress> current = new AtomicReference<>();
 
@@ -62,9 +65,10 @@ public class EmbeddingReindexService {
                                    FileUploadRepository fileUploadRepository,
                                    DocumentVectorRepository documentVectorRepository,
                                    FileProcessingListenerGate listenerGate,
-                                   EmbeddingReindexProperties properties) {
+                                   EmbeddingReindexProperties properties,
+                                   ContextualRetrievalProperties contextualProperties) {
         this(indexManager, elasticsearchService, embeddingClient, providerConfigService, fileUploadRepository,
-                documentVectorRepository, listenerGate, properties,
+                documentVectorRepository, listenerGate, properties, contextualProperties,
                 Executors.newSingleThreadExecutor(r -> new Thread(r, "embedding-reindex")));
     }
 
@@ -76,6 +80,7 @@ public class EmbeddingReindexService {
                             DocumentVectorRepository documentVectorRepository,
                             FileProcessingListenerGate listenerGate,
                             EmbeddingReindexProperties properties,
+                            ContextualRetrievalProperties contextualProperties,
                             ExecutorService executor) {
         this.indexManager = indexManager;
         this.elasticsearchService = elasticsearchService;
@@ -85,6 +90,7 @@ public class EmbeddingReindexService {
         this.documentVectorRepository = documentVectorRepository;
         this.listenerGate = listenerGate;
         this.properties = properties;
+        this.contextualProperties = contextualProperties;
         this.executor = executor;
     }
 
@@ -246,10 +252,16 @@ public class EmbeddingReindexService {
         }
 
         elasticsearchService.deleteByFileMd5(progress.targetIndex, fileMd5);
+        // 上下文说明只和分块内容有关、与 embedding 模型无关，重建时复用 MySQL 里已生成的说明，不重新调用 LLM；
+        // 拼法与入库链路一致（ContextualChunkText），功能关闭时两边都按原文建索引
+        boolean contextual = contextualProperties != null && contextualProperties.isEnabled();
         int batchSize = Math.max(properties.getBatchSize(), 1);
         for (int start = 0; start < chunks.size(); start += batchSize) {
             List<DocumentVector> batch = chunks.subList(start, Math.min(start + batchSize, chunks.size()));
-            List<float[]> vectors = embedWithRetry(batch.stream().map(DocumentVector::getTextContent).toList(), progress.target);
+            List<String> texts = batch.stream()
+                    .map(chunk -> ContextualChunkText.compose(contextual ? chunk.getChunkContext() : null, chunk.getTextContent()))
+                    .toList();
+            List<float[]> vectors = embedWithRetry(texts, progress.target);
             if (vectors.size() != batch.size()) {
                 throw new IllegalStateException(String.format("embedding 返回数量不一致: fileMd5=%s, expected=%d, actual=%d",
                         fileMd5, batch.size(), vectors.size()));
@@ -262,6 +274,7 @@ public class EmbeddingReindexService {
                         fileMd5,
                         chunk.getChunkId(),
                         chunk.getTextContent(),
+                        contextual ? chunk.getChunkContext() : null,
                         chunk.getPageNumber(),
                         chunk.getAnchorText(),
                         vectors.get(i),

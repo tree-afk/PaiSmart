@@ -6,15 +6,18 @@ import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.service.AgentToolRegistry;
 import com.yizhaoqi.smartpai.service.HybridSearchService;
 import com.yizhaoqi.smartpai.service.LlmProviderRouter;
+import com.yizhaoqi.smartpai.service.search.ParentContextExpander;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
@@ -48,17 +51,20 @@ public class RagEvalCaseRunner {
 
     private final HybridSearchService hybridSearchService;
     private final LlmProviderRouter llmProviderRouter;
+    private final ParentContextExpander parentContextExpander;
     private final RagEvalProperties properties;
     private final ObjectMapper objectMapper;
     private final Executor llmExecutor;
 
     public RagEvalCaseRunner(HybridSearchService hybridSearchService,
                              LlmProviderRouter llmProviderRouter,
+                             ParentContextExpander parentContextExpander,
                              RagEvalProperties properties,
                              ObjectMapper objectMapper,
                              @Qualifier("evalLlmExecutor") Executor llmExecutor) {
         this.hybridSearchService = hybridSearchService;
         this.llmProviderRouter = llmProviderRouter;
+        this.parentContextExpander = parentContextExpander;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.llmExecutor = llmExecutor;
@@ -79,6 +85,8 @@ public class RagEvalCaseRunner {
             return draft.build(sampler.decide(false), System.currentTimeMillis() - start);
         }
         recordRetrieval(draft, evalCase, results, topK);
+        // 与线上问答一致：检索指标按命中的小分块算，生成和评委看到的是父块
+        results = expandParents(results);
 
         try {
             draft.answer = generate(evalCase.question(), results);
@@ -95,6 +103,18 @@ public class RagEvalCaseRunner {
         draft.diagnosis = EvalDiagnosis.classify(draft.retrievalHit, draft.answer != null, verdict);
         boolean judgeFailed = draft.answer != null && (verdict == null || verdict.parseFailed());
         return draft.build(sampler.decide(judgeFailed), System.currentTimeMillis() - start);
+    }
+
+    private List<SearchResult> expandParents(List<SearchResult> results) {
+        if (parentContextExpander == null) {
+            return results;
+        }
+        try {
+            return parentContextExpander.expand(results);
+        } catch (Exception e) {
+            logger.warn("父块扩展失败，按小分块生成: {}", e.getMessage());
+            return results;
+        }
     }
 
     private void recordRetrieval(Draft draft, EvalCase evalCase, List<SearchResult> results, int topK) {
@@ -157,13 +177,18 @@ public class RagEvalCaseRunner {
 
     private List<Map<String, Object>> evidence(List<SearchResult> results) {
         List<Map<String, Object>> evidence = new ArrayList<>(results.size());
+        Set<String> emittedParents = new HashSet<>();
         for (int i = 0; i < results.size(); i++) {
             SearchResult r = results.get(i);
-            String text = r.getMatchedChunkText() != null ? r.getMatchedChunkText() : r.getTextContent();
+            String matched = r.getMatchedChunkText() != null ? r.getMatchedChunkText() : r.getTextContent();
+            boolean newParent = r.getParentContext() != null && !r.getParentContext().isBlank()
+                    && r.getParentKey() != null && emittedParents.add(r.getParentKey());
+            // 生成时模型看到了父块，评委判断有没有编造也要看同样的父块（父块长度已受 search.parent-context 限制）
+            String text = newParent ? r.getParentContext() : truncate(matched, properties.getMaxEvidenceChars());
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("rank", i + 1);
             item.put("file", r.getFileName());
-            item.put("text", truncate(text, properties.getMaxEvidenceChars()));
+            item.put("text", text);
             evidence.add(item);
         }
         return evidence;

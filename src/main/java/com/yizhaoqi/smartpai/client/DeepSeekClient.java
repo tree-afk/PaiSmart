@@ -290,6 +290,8 @@ public class DeepSeekClient {
 
     private String buildSummaryContext(List<SearchResult> searchResults) {
         StringBuilder context = new StringBuilder();
+        // 父子检索：有父块时给父块，多个命中共用的父块只给一次
+        java.util.Set<String> emittedParents = new java.util.HashSet<>();
         for (int i = 0; i < searchResults.size(); i++) {
             SearchResult result = searchResults.get(i);
             context.append("[").append(i + 1).append("] ");
@@ -301,8 +303,11 @@ public class DeepSeekClient {
             if (result.getPageNumber() != null) {
                 context.append("，page=").append(result.getPageNumber());
             }
+            String matched = result.getMatchedChunkText() != null ? result.getMatchedChunkText() : result.getTextContent();
+            boolean newParent = result.getParentContext() != null && !result.getParentContext().isBlank()
+                    && result.getParentKey() != null && emittedParents.add(result.getParentKey());
             context.append("\n")
-                    .append(limitText(result.getMatchedChunkText() != null ? result.getMatchedChunkText() : result.getTextContent(), 1800))
+                    .append(limitText(newParent ? result.getParentContext() : matched, 1800))
                     .append("\n\n");
         }
         return context.toString();

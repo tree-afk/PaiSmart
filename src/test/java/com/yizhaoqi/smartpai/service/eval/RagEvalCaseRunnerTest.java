@@ -2,12 +2,17 @@ package com.yizhaoqi.smartpai.service.eval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.config.ParentContextProperties;
 import com.yizhaoqi.smartpai.config.RagEvalProperties;
 import com.yizhaoqi.smartpai.entity.SearchResult;
+import com.yizhaoqi.smartpai.model.DocumentVector;
+import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.service.HybridSearchService;
 import com.yizhaoqi.smartpai.service.LlmProviderRouter;
+import com.yizhaoqi.smartpai.service.search.ParentContextExpander;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class RagEvalCaseRunnerTest {
@@ -30,6 +36,8 @@ class RagEvalCaseRunnerTest {
     private final HybridSearchService searchService = mock(HybridSearchService.class);
     private final LlmProviderRouter router = mock(LlmProviderRouter.class);
     private final RagEvalProperties properties = new RagEvalProperties();
+    private final ParentContextProperties parentProperties = new ParentContextProperties();
+    private final DocumentVectorRepository documentVectorRepository = mock(DocumentVectorRepository.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HumanReviewSampler noSampling = new HumanReviewSampler(0d, new Random(1));
     private final List<List<Map<String, Object>>> llmCalls = new ArrayList<>();
@@ -38,7 +46,9 @@ class RagEvalCaseRunnerTest {
 
     @BeforeEach
     void setUp() {
-        runner = new RagEvalCaseRunner(searchService, router, properties, objectMapper, Runnable::run);
+        parentProperties.setEnabled(false);
+        runner = new RagEvalCaseRunner(searchService, router,
+                new ParentContextExpander(parentProperties, documentVectorRepository), properties, objectMapper, Runnable::run);
         when(router.buildRagMessages(anyString(), anyString()))
                 .thenAnswer(invocation -> List.of(Map.<String, Object>of("role", "user", "content", invocation.getArgument(0))));
         when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt())).thenAnswer(invocation -> {
@@ -79,6 +89,27 @@ class RagEvalCaseRunnerTest {
         assertEquals("端口？", payload.get("question").asText());
         assertEquals("8080", payload.get("reference_answer").asText());
         assertEquals(2, payload.get("evidence").size());
+    }
+
+    @Test
+    void generationAndJudgeSeeParentBlockWhileRetrievalMetricsUseSmallChunk() throws Exception {
+        parentProperties.setEnabled(true);
+        when(searchService.searchWithPermission("端口？", "7", 3)).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(documentVectorRepository.findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc("m1", 0, 2)).thenReturn(List.of(
+                chunk("m1", 1, "端口配置为 8080"), chunk("m1", 2, "修改端口后需要重启服务。")));
+        llmReplies.add("端口是 8080，修改后需要重启（来源#1: config.pdf）");
+        llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
+
+        ArgumentCaptor<String> context = ArgumentCaptor.forClass(String.class);
+        verify(router).buildRagMessages(eq("端口？"), context.capture());
+        assertTrue(context.getValue().contains("上下文（命中分块及前后相邻内容）：\n端口配置为 8080\n\n修改端口后需要重启服务。"));
+        JsonNode payload = objectMapper.readTree((String) llmCalls.get(1).get(1).get("content"));
+        assertTrue(payload.get("evidence").get(0).get("text").asText().contains("修改端口后需要重启服务"),
+                "评委看到的证据与生成时一致");
+        assertEquals(1, result.retrieved().get(0).chunkId(), "检索明细仍指向命中的小分块");
+        assertTrue(result.retrievalHit());
     }
 
     @Test
@@ -153,5 +184,13 @@ class RagEvalCaseRunnerTest {
 
     private static SearchResult result(String md5, String fileName, String mode) {
         return new SearchResult(md5, 1, "端口配置为 8080", 0.9, "7", "dept", false, fileName, null, null, mode, null);
+    }
+
+    private static DocumentVector chunk(String md5, int chunkId, String text) {
+        DocumentVector vector = new DocumentVector();
+        vector.setFileMd5(md5);
+        vector.setChunkId(chunkId);
+        vector.setTextContent(text);
+        return vector;
     }
 }

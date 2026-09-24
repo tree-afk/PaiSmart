@@ -2,7 +2,9 @@ package com.yizhaoqi.smartpai.service.eval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.HybridSearchProperties;
+import com.yizhaoqi.smartpai.config.ParentContextProperties;
 import com.yizhaoqi.smartpai.config.RagEvalProperties;
 import com.yizhaoqi.smartpai.exception.CustomException;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +19,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -39,7 +42,8 @@ class RagEvalServiceTest {
     void setUp() {
         properties.setOutputDir(tempDir.resolve("reports").toString());
         properties.setDatasetDir(tempDir.resolve("datasets").toString());
-        service = new RagEvalService(caseRunner, properties, new HybridSearchProperties(), objectMapper, new DirectExecutor());
+        service = new RagEvalService(caseRunner, properties, new HybridSearchProperties(), new ParentContextProperties(),
+                new ContextualRetrievalProperties(), objectMapper, new DirectExecutor());
     }
 
     @Test
@@ -66,6 +70,25 @@ class RagEvalServiceTest {
         assertEquals(1.0, report.get("summary").get("accuracy").asDouble(), 1e-9);
         assertEquals("OK", report.get("cases").get(0).get("diagnosis").asText());
         assertTrue(report.get("diagnosisGuide").has("PROMPT_OR_MODEL"));
+        assertTrue(report.get("config").get("parentContextEnabled").asBoolean(), "报告记录父子检索开关，便于前后对比");
+        assertFalse(report.get("config").get("contextualRetrievalEnabled").asBoolean());
+    }
+
+    @Test
+    void reportPathIsFoundOnDiskAfterRunStateIsGone() throws Exception {
+        EvalCase evalCase = new EvalCase("c1", "q", List.of(), List.of(), "ref");
+        when(caseRunner.run(eq(evalCase), eq("7"), anyInt(), any())).thenReturn(new EvalCaseResult(
+                "c1", "q", "ref", List.of(), List.of(), "HYBRID", List.of(), null, null, null, null,
+                "answer", 4, true, "ok", null, EvalDiagnosis.NOT_LABELED, false, null, null, 12L));
+        String runId = service.start(List.of(evalCase), "inline", 3, "l", "7", "admin").runId();
+
+        // 模拟重启：新的服务实例内存里没有任务状态
+        RagEvalService restarted = new RagEvalService(caseRunner, properties, new HybridSearchProperties(), null, null,
+                objectMapper, new DirectExecutor());
+
+        assertTrue(restarted.findReportPath(runId).isPresent());
+        assertTrue(restarted.readReport(runId).isPresent());
+        assertTrue(restarted.findReportPath("../etc").isEmpty(), "runId 只允许字母数字");
     }
 
     @Test

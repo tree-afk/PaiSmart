@@ -1,6 +1,7 @@
 package com.yizhaoqi.smartpai.service.index;
 
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
+import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
 import com.yizhaoqi.smartpai.config.EmbeddingReindexProperties;
 import com.yizhaoqi.smartpai.consumer.FileProcessingListenerGate;
 import com.yizhaoqi.smartpai.entity.EsDocument;
@@ -60,13 +61,15 @@ class EmbeddingReindexServiceTest {
     private final DocumentVectorRepository documentVectorRepository = mock(DocumentVectorRepository.class);
     private final FileProcessingListenerGate gate = mock(FileProcessingListenerGate.class);
     private final EmbeddingReindexProperties properties = new EmbeddingReindexProperties();
+    private final ContextualRetrievalProperties contextualProperties = new ContextualRetrievalProperties();
     private EmbeddingReindexService service;
 
     @BeforeEach
     void setUp() throws Exception {
         properties.setBatchSize(2);
         service = new EmbeddingReindexService(indexManager, esService, embeddingClient, providerConfig,
-                fileUploadRepository, documentVectorRepository, gate, properties, new DirectExecutorService());
+                fileUploadRepository, documentVectorRepository, gate, properties, contextualProperties,
+                new DirectExecutorService());
 
         when(providerConfig.getProvider(ModelProviderConfigService.SCOPE_EMBEDDING, "zhipu")).thenReturn(NEW);
         when(providerConfig.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING)).thenReturn(OLD);
@@ -126,6 +129,42 @@ class EmbeddingReindexServiceTest {
         order.verify(providerConfig).activateEmbeddingProviderAfterReindex("zhipu", "admin");
         order.verify(gate).resume(FileProcessingListenerGate.REASON_INDEX_SWITCH);
         verify(indexManager, never()).deleteIndex(anyString());
+    }
+
+    @Test
+    void rebuildReusesStoredChunkContextsWithSameCompositionAsIngestion() throws Exception {
+        contextualProperties.setEnabled(true);
+        List<DocumentVector> f1Chunks = List.of(chunk("f1", 0), chunk("f1", 1), chunk("f1", 2));
+        f1Chunks.get(0).setChunkContext("出自《部署手册》第 2 章端口配置。");
+        when(documentVectorRepository.findByFileMd5OrderByChunkIdAsc("f1")).thenReturn(f1Chunks);
+
+        service.startRebuild("zhipu", false, "admin");
+
+        ArgumentCaptor<List<String>> texts = ArgumentCaptor.forClass(List.class);
+        verify(embeddingClient, times(2)).embedWithProvider(texts.capture(), eq("system-reindex"), any(), eq(NEW));
+        assertEquals(List.of("出自《部署手册》第 2 章端口配置。\n\ntext-0", "text-1"), texts.getAllValues().get(0),
+                "说明拼在原文前面做 embedding，没有说明的分块按原文");
+        ArgumentCaptor<List<EsDocument>> batches = ArgumentCaptor.forClass(List.class);
+        verify(esService, times(2)).bulkIndex(eq(NEW_INDEX), batches.capture());
+        EsDocument first = batches.getAllValues().get(0).get(0);
+        assertEquals("text-0", first.getTextContent(), "ES 里原文字段不带说明");
+        assertEquals("出自《部署手册》第 2 章端口配置。", first.getChunkContext());
+    }
+
+    @Test
+    void rebuildIgnoresStoredContextsWhenContextualRetrievalDisabled() throws Exception {
+        List<DocumentVector> f1Chunks = List.of(chunk("f1", 0), chunk("f1", 1), chunk("f1", 2));
+        f1Chunks.get(0).setChunkContext("旧说明");
+        when(documentVectorRepository.findByFileMd5OrderByChunkIdAsc("f1")).thenReturn(f1Chunks);
+
+        service.startRebuild("zhipu", false, "admin");
+
+        ArgumentCaptor<List<String>> texts = ArgumentCaptor.forClass(List.class);
+        verify(embeddingClient, times(2)).embedWithProvider(texts.capture(), eq("system-reindex"), any(), eq(NEW));
+        assertEquals(List.of("text-0", "text-1"), texts.getAllValues().get(0));
+        ArgumentCaptor<List<EsDocument>> batches = ArgumentCaptor.forClass(List.class);
+        verify(esService, times(2)).bulkIndex(eq(NEW_INDEX), batches.capture());
+        assertEquals(null, batches.getAllValues().get(0).get(0).getChunkContext());
     }
 
     @Test

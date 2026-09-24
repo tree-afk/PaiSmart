@@ -1,7 +1,10 @@
 package com.yizhaoqi.smartpai.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yizhaoqi.smartpai.exception.CustomException;
 import com.yizhaoqi.smartpai.service.eval.EvalCase;
+import com.yizhaoqi.smartpai.service.eval.EvalHumanReviewService;
 import com.yizhaoqi.smartpai.service.eval.RagEvalService;
 import com.yizhaoqi.smartpai.utils.JwtUtils;
 import com.yizhaoqi.smartpai.utils.LogUtils;
@@ -35,10 +38,17 @@ public class RagEvalAdminController {
     private static final long MAX_UPLOAD_BYTES = 5L * 1024 * 1024;
 
     private final RagEvalService evalService;
+    private final EvalHumanReviewService humanReviewService;
+    private final ObjectMapper objectMapper;
     private final JwtUtils jwtUtils;
 
-    public RagEvalAdminController(RagEvalService evalService, JwtUtils jwtUtils) {
+    public RagEvalAdminController(RagEvalService evalService,
+                                  EvalHumanReviewService humanReviewService,
+                                  ObjectMapper objectMapper,
+                                  JwtUtils jwtUtils) {
         this.evalService = evalService;
+        this.humanReviewService = humanReviewService;
+        this.objectMapper = objectMapper;
         this.jwtUtils = jwtUtils;
     }
 
@@ -95,15 +105,59 @@ public class RagEvalAdminController {
                 .orElseGet(() -> error(HttpStatus.NOT_FOUND, "评测任务不存在: " + runId));
     }
 
+    /**
+     * 完整报告；录入过人工判定时附带 humanReview（人工判定 + 评委与人工一致率），报告文件本身不改
+     */
     @GetMapping("/runs/{runId}/report")
     public ResponseEntity<?> report(@PathVariable String runId) {
         try {
             return evalService.readReport(runId)
-                    .<ResponseEntity<?>>map(report -> ok("获取评测报告成功", report))
+                    .<ResponseEntity<?>>map(report -> ok("获取评测报告成功", withHumanReview(runId, report)))
                     .orElseGet(() -> error(HttpStatus.NOT_FOUND, "评测报告不存在或任务尚未完成: " + runId));
         } catch (CustomException e) {
             return error(e.getStatus(), e.getMessage());
         }
+    }
+
+    /**
+     * 录入人工判定：{"reviews": [{"caseId": "c1", "correct": true, "score": 4, "note": "..."}]}，
+     * 同一用例重复提交以最后一次为准。返回全部人工判定和评委与人工一致率。
+     */
+    @PostMapping("/runs/{runId}/human-reviews")
+    public ResponseEntity<?> submitHumanReviews(@RequestHeader("Authorization") String token,
+                                                @PathVariable String runId,
+                                                @RequestBody HumanReviewRequest request) {
+        String reviewer = jwtUtils.extractUsernameFromToken(token.replace("Bearer ", ""));
+        try {
+            EvalHumanReviewService.HumanReviewSummary summary =
+                    humanReviewService.submit(runId, request == null ? null : request.reviews(), reviewer);
+            LogUtils.logUserOperation(reviewer, "RAG_EVAL_HUMAN_REVIEW", runId, "SAVED");
+            return ok("人工判定已保存", summary);
+        } catch (CustomException e) {
+            return error(e.getStatus(), e.getMessage());
+        }
+    }
+
+    @GetMapping("/runs/{runId}/human-reviews")
+    public ResponseEntity<?> humanReviews(@PathVariable String runId) {
+        try {
+            return ok("获取人工判定成功", humanReviewService.get(runId));
+        } catch (CustomException e) {
+            return error(e.getStatus(), e.getMessage());
+        }
+    }
+
+    private Object withHumanReview(String runId, Object report) {
+        if (!(report instanceof ObjectNode node)) {
+            return report;
+        }
+        Map<String, Object> attachment = humanReviewService.attachmentFor(runId);
+        if (attachment == null) {
+            return node;
+        }
+        ObjectNode copy = node.deepCopy();
+        copy.set("humanReview", objectMapper.valueToTree(attachment));
+        return copy;
     }
 
     private ResponseEntity<?> submit(String token, Integer topK, String label, String source, DatasetLoader loader) {
@@ -150,5 +204,8 @@ public class RagEvalAdminController {
     }
 
     public record RunRequest(String datasetPath, String jsonl, Integer topK, String label) {
+    }
+
+    public record HumanReviewRequest(List<EvalHumanReviewService.HumanReviewInput> reviews) {
     }
 }

@@ -16,6 +16,8 @@ public class SearchResult {
     private String anchorText; // 页内定位锚点
     private String retrievalMode; // 召回方式
     private String matchedChunkText; // 命中的 chunk 原文
+    private String parentContext; // 父子检索：命中分块连同相邻分块的父块文本，只交给模型，不用于引用和证据片段
+    private String parentKey;     // 父块标识 fileMd5#起始chunkId-结束chunkId，多个命中共用一个父块时相同
 
     public SearchResult(String fileMd5, Integer chunkId, String textContent, Double score) {
         this(fileMd5, chunkId, textContent, score, null, null, false, null, null, null, null, null);
@@ -53,5 +55,16 @@ public class SearchResult {
         this.anchorText = anchorText;
         this.retrievalMode = retrievalMode;
         this.matchedChunkText = matchedChunkText != null ? matchedChunkText : textContent;
+    }
+
+    /**
+     * 返回附带父块的新对象，原对象不变；引用相关字段（chunkId、页码、锚点、命中原文）保持指向命中的小分块
+     */
+    public SearchResult withParentContext(String parentContext, String parentKey) {
+        SearchResult copy = new SearchResult(fileMd5, chunkId, textContent, score, userId, orgTag,
+                Boolean.TRUE.equals(isPublic), fileName, pageNumber, anchorText, retrievalMode, matchedChunkText);
+        copy.setParentContext(parentContext);
+        copy.setParentKey(parentKey);
+        return copy;
     }
 }

@@ -192,6 +192,24 @@ knowledge:
       rate-limit-backoff-seconds: ${KNOWLEDGE_INDEX_REBUILD_RATE_LIMIT_BACKOFF_SECONDS:20}
       # 切换别名前在新索引上抽样跑的测试问题，每个问题至少召回一条才允许切换
       validation-queries: []
+  # 上下文检索（Anthropic Contextual Retrieval）：入库时让 LLM 给每个分块写一两句上下文说明，
+  # 说明拼在原文前面做 embedding，并存入 ES 的 chunkContext 字段与 textContent 一起算 BM25；原文单独保存，展示和引用只用原文。
+  # 每批分块一次 LLM 调用，成本随文档长度线性增长，默认关闭
+  contextual-retrieval:
+    enabled: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_ENABLED:false}
+    chunks-per-request: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_CHUNKS_PER_REQUEST:8}
+    # 本批分块前后各带几个相邻分块作为文档窗口
+    neighbour-chunks: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_NEIGHBOUR_CHUNKS:2}
+    # 送给 LLM 的窗口（标题 + 相邻分块 + 本批分块）最大字符数
+    max-window-chars: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_MAX_WINDOW_CHARS:6000}
+    # 单个分块上下文说明的最大字符数
+    max-context-chars: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_MAX_CONTEXT_CHARS:200}
+    # 同时在途的 LLM 调用数（所有文件共享）
+    concurrency: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_CONCURRENCY:2}
+    max-completion-tokens: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_MAX_COMPLETION_TOKENS:1200}
+    rate-limit-retries: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_RATE_LIMIT_RETRIES:2}
+    rate-limit-backoff-seconds: ${KNOWLEDGE_CONTEXTUAL_RETRIEVAL_RATE_LIMIT_BACKOFF_SECONDS:10}
+    requester-id: system-contextual
   # 文档冲突检测：新文件向量化完成后异步扫描，相似度高但数字 / 版本号 / 日期不同的分块对记为疑似冲突
   # 只记录不处理，管理员通过 /api/v1/admin/document-conflicts 人工决定保留哪一篇
   conflict:
@@ -229,6 +247,14 @@ eval:
   judge-timeout-seconds: ${EVAL_JUDGE_TIMEOUT_SECONDS:60}
   max-evidence-chars: 800
   requester-id: system-eval
+  # 评委与人工一致率：POST /api/v1/admin/eval/runs/{runId}/human-reviews 录入人工判定后计算
+  human-agreement:
+    # 评委与人工在"是否正确"上的一致率低于该值时，在评测汇总上告警：评分标准或评委模型需要重新校准
+    min-agreement-rate: ${EVAL_HUMAN_AGREEMENT_MIN_RATE:0.8}
+    # Cohen's kappa 下限，为空时不检查；正确率很高或很低时一致率会虚高，kappa 能扣掉碰巧一致的部分
+    min-kappa: ${EVAL_HUMAN_AGREEMENT_MIN_KAPPA:}
+    # 可比较的用例（评委和人工都给了结论）少于该数量时只提示样本不足，不下结论
+    min-comparable-cases: ${EVAL_HUMAN_AGREEMENT_MIN_CASES:5}
 
 search:
   hybrid:
@@ -251,6 +277,16 @@ search:
       score-threshold: ${SEARCH_RERANK_SCORE_THRESHOLD:0.2}
       max-document-chars: ${SEARCH_RERANK_MAX_DOCUMENT_CHARS:2000}
       timeout-seconds: ${SEARCH_RERANK_TIMEOUT_SECONDS:10}
+  # 父子检索（small-to-big）：检索仍在小分块上做，命中后把分块连同同一文件前后相邻的分块交给模型；
+  # 引用、页码和证据片段仍指向命中的小分块，多个命中落在同一个父块里时父块只发一次
+  parent-context:
+    enabled: ${SEARCH_PARENT_CONTEXT_ENABLED:true}
+    # 命中分块前后各最多扩展几个相邻分块
+    neighbour-chunks: ${SEARCH_PARENT_CONTEXT_NEIGHBOUR_CHUNKS:1}
+    # 单个父块最大字符数（含命中分块本身）
+    max-chars-per-hit: ${SEARCH_PARENT_CONTEXT_MAX_CHARS_PER_HIT:1500}
+    # 一次检索结果里所有父块的总字符数上限，用完后剩余命中只给小分块
+    max-total-chars: ${SEARCH_PARENT_CONTEXT_MAX_TOTAL_CHARS:6000}
 
 elasticsearch:
   # 本地如果是自签名证书，可设为 https + trust-all=true。
