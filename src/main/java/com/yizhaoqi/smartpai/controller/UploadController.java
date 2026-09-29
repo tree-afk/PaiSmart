@@ -130,6 +130,8 @@ public class UploadController {
                 }
             }
 
+            userService.validateUploadOrganization(userId, orgTag);
+
             if (!userService.isAdminUser(userId)) {
                 OrganizationTag uploadOrg = userService.getOrganizationTag(orgTag);
                 Long uploadMaxSizeBytes = uploadOrg.getUploadMaxSizeBytes();

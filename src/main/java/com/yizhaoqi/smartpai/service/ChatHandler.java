@@ -103,6 +103,10 @@ public class ChatHandler {
     }
 
     public void processMessage(String userId, String userMessage, WebSocketSession session) {
+        processMessage(userId, userMessage, session, null);
+    }
+
+    public void processMessage(String userId, String userMessage, WebSocketSession session, String requestedConversationId) {
         logger.info("开始处理消息，用户ID: {}, 会话ID: {}", userId, session.getId());
         String conversationId = null;
         String generationId = null;
@@ -110,11 +114,17 @@ public class ChatHandler {
             rateLimitService.checkChatByUser(userId);
 
             // 1. 获取或创建会话 ID
-            conversationId = getOrCreateConversationId(userId);
+            if (requestedConversationId != null && !requestedConversationId.isBlank()) {
+                conversationService.validateConversationOwner(Long.parseLong(userId), requestedConversationId);
+                conversationId = requestedConversationId;
+            } else {
+                conversationId = getOrCreateConversationId(userId);
+            }
             conversationService.ensureConversationSession(Long.parseLong(userId), conversationId, userMessage);
             ChatGenerationStateService.GenerationSnapshot generation =
                     chatGenerationStateService.createGeneration(userId, conversationId, userMessage);
             generationId = generation.generationId();
+            chatSessionRegistry.bindGeneration(userId, generationId, session);
             final String finalConversationId = conversationId;
             final String finalGenerationId = generationId;
             logger.info("会话ID: {}, 用户ID: {}", conversationId, userId);
@@ -144,14 +154,19 @@ public class ChatHandler {
             }
 
         } catch (RateLimitExceededException e) {
-            sendRateLimitMessage(userId, null, e);
+            chatSessionRegistry.sendJsonToSession(session, Map.of(
+                    "type", "error", "code", 429, "message", e.getMessage(),
+                    "retryAfterSeconds", e.getRetryAfterSeconds()));
         } catch (Exception e) {
             logger.error("处理消息错误: {}", e.getMessage(), e);
             if (generationId != null) {
                 chatGenerationStateService.markFailed(generationId, e.getMessage());
+            }
+            chatSessionRegistry.sendJsonToSession(session, Map.of(
+                    "type", "error", "error", "AI服务暂时不可用，请稍后重试"));
+            if (generationId != null) {
                 cleanupGenerationState(generationId, e);
             }
-            handleError(userId, generationId, e);
         }
     }
 
@@ -565,6 +580,7 @@ public class ChatHandler {
     }
 
     private void cleanupGenerationState(String generationId, Throwable throwable) {
+        chatSessionRegistry.releaseGeneration(generationId);
         responseBuilders.remove(generationId);
         generationReferenceMappings.remove(generationId);
         generationParentContexts.remove(generationId);

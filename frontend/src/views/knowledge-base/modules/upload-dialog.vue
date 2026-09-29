@@ -7,7 +7,10 @@ defineOptions({
 
 const loading = ref(false);
 const visible = defineModel<boolean>('visible', { default: false });
-const singleOrgOnly = ref(false);
+const orgOptions = ref<Api.OrgTag.Details[]>([]);
+const orgLoading = ref(false);
+const orgLoadFailed = ref(false);
+let orgRequestId = 0;
 
 const authStore = useAuthStore();
 
@@ -42,7 +45,9 @@ const fileSizeLimitError = computed(() => {
   return `当前组织限制非管理员上传文件不超过 ${model.value.uploadMaxSizeMb} MB，当前文件大小为 ${(file.size / 1024 / 1024).toFixed(2)} MB`;
 });
 
-const submitDisabled = computed(() => loading.value || Boolean(fileSizeLimitError.value));
+const submitDisabled = computed(
+  () => loading.value || orgLoading.value || !model.value.orgTag || Boolean(fileSizeLimitError.value)
+);
 
 function close() {
   visible.value = false;
@@ -59,28 +64,34 @@ async function handleSubmit() {
   close();
 }
 
-async function presetSingleOrgForUser() {
-  singleOrgOnly.value = false;
+async function loadUploadOrganizations() {
+  orgRequestId += 1;
+  const requestId = orgRequestId;
+  orgOptions.value = [];
+  orgLoading.value = true;
+  orgLoadFailed.value = false;
   const { error, data } = await request<Api.OrgTag.Mine>({ url: '/users/org-tags' });
-  if (error || !visible.value) return;
+  if (requestId !== orgRequestId || !visible.value) return;
 
-  const orgTagDetails = data.orgTagDetails || [];
-  if (orgTagDetails.length !== 1) return;
+  orgLoading.value = false;
+  orgLoadFailed.value = Boolean(error);
+  if (error || !data) return;
 
-  const singleOrg = orgTagDetails[0];
-  model.value.orgTag = singleOrg.tagId;
-  onUpdate(singleOrg);
-  singleOrgOnly.value = true;
+  orgOptions.value = data.orgTagDetails || [];
+  const preferredOrg = orgOptions.value.find(org => org.tagId === data.primaryOrg) || orgOptions.value[0];
+  if (preferredOrg) {
+    model.value.orgTag = preferredOrg.tagId;
+    onUpdate(preferredOrg);
+  }
 }
 
 watch(visible, () => {
   if (visible.value) {
     model.value = createDefaultModel();
-    singleOrgOnly.value = false;
-    if (!authStore.isAdmin) {
-      presetSingleOrgForUser();
-    }
+    loadUploadOrganizations();
     restoreValidation();
+  } else {
+    orgRequestId += 1;
   }
 });
 
@@ -109,19 +120,25 @@ function onUpdate(option: unknown) {
     @positive-click="handleSubmit"
   >
     <NForm ref="formRef" :model="model" :rules="rules" label-placement="left" :label-width="100" mt-10>
-      <NFormItem v-if="authStore.isAdmin" label="组织标签" path="orgTag">
-        <OrgTagCascader v-model:value="model.orgTag" @change="onUpdate" />
-      </NFormItem>
-      <NFormItem v-else label="组织标签" path="orgTag">
-        <TheSelect
-          v-model:value="model.orgTag"
-          url="/users/org-tags"
-          key-field="orgTagDetails"
-          label-field="name"
-          value-field="tagId"
-          :disabled="singleOrgOnly"
-          @change="onUpdate"
-        />
+      <NFormItem label="所属空间" path="orgTag">
+        <div class="w-full">
+          <NSelect
+            v-model:value="model.orgTag"
+            :options="orgOptions"
+            label-field="name"
+            value-field="tagId"
+            placeholder="请选择所属空间"
+            :loading="orgLoading"
+            :disabled="orgLoading || orgOptions.length <= 1"
+            filterable
+            @update:value="(_, option) => onUpdate(option)"
+          />
+          <div class="mt-8px text-12px text-gray-500">仅可选择自己的空间和已加入的组织。</div>
+          <div v-if="orgLoadFailed" class="mt-8px text-12px text-#ef4444">空间列表加载失败，请关闭后重试。</div>
+          <div v-else-if="!orgLoading && !orgOptions.length" class="mt-8px text-12px text-#ef4444">
+            暂无可上传的空间，请先配置组织成员关系。
+          </div>
+        </div>
       </NFormItem>
 
       <NFormItem label="是否公开" path="isPublic">
@@ -132,7 +149,7 @@ function onUpdate(option: unknown) {
           </NSpace>
         </NRadioGroup>
       </NFormItem>
-      <NFormItem label="标签描述" path="fileList">
+      <NFormItem label="上传文件" path="fileList">
         <NUpload
           v-model:file-list="model.fileList"
           :accept="uploadAccept"

@@ -60,18 +60,34 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     return '';
   }
 
+  function matchesUnboundPending(questionText: string) {
+    const pending = list.value[list.value.length - 1];
+    const question = list.value[list.value.length - 2];
+    return (
+      pending?.role === 'assistant' &&
+      !pending.generationId &&
+      ['pending', 'loading'].includes(pending.status || '') &&
+      question?.role === 'user' &&
+      question.content === questionText
+    );
+  }
+
   function upsertGenerationSnapshot(snapshot: Api.Chat.GenerationSnapshot | null) {
     if (!snapshot) {
       return;
     }
+    if (conversationId.value && snapshot.conversationId !== conversationId.value) return;
     conversationId.value = snapshot.conversationId || conversationId.value;
 
-    const assistantIndex = findAssistantIndexByGenerationId(snapshot.generationId);
+    let assistantIndex = findAssistantIndexByGenerationId(snapshot.generationId);
+    if (assistantIndex < 0 && matchesUnboundPending(snapshot.question)) {
+      assistantIndex = list.value.length - 1;
+    }
     const nextStatus = mapGenerationStatus(snapshot.status);
 
     if (assistantIndex >= 0) {
       const assistant = list.value[assistantIndex];
-      assistant.content = snapshot.content || assistant.content || '';
+      assistant.content = snapshot.content || assistant.content || snapshot.errorMessage || '';
       assistant.status = nextStatus;
       assistant.generationId = snapshot.generationId;
       assistant.conversationId = snapshot.conversationId;
@@ -124,12 +140,15 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
   }
 
   async function syncGenerationAfterReconnect() {
+    const targetConversationId = conversationId.value;
     const pendingGenerationId = getPendingGenerationId();
-    if (pendingGenerationId) {
-      upsertGenerationSnapshot(await fetchGenerationSnapshot(pendingGenerationId));
-      return;
-    }
-    upsertGenerationSnapshot(await fetchActiveGenerationSnapshot());
+    const snapshot = pendingGenerationId
+      ? await fetchGenerationSnapshot(pendingGenerationId)
+      : await fetchActiveGenerationSnapshot();
+    if (conversationId.value !== targetConversationId || !snapshot) return;
+    if (targetConversationId && snapshot.conversationId !== targetConversationId) return;
+    upsertGenerationSnapshot(snapshot);
+    if (snapshot.status === 'STREAMING') resumeGeneration(snapshot.generationId);
   }
 
   // ---- Session management ----
@@ -186,11 +205,19 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     if (!cid) {
       return;
     }
+    const messagesBeforeRequest = [...list.value];
     const { error, data } = await request<Api.Chat.Message[]>({
       url: 'users/conversation',
       params: { conversationId: cid }
     });
-    if (!error && data) {
+    if (
+      !error &&
+      data &&
+      cid === conversationId.value &&
+      list.value.length === messagesBeforeRequest.length &&
+      list.value.every((message, index) => message === messagesBeforeRequest[index]) &&
+      !list.value.some(message => ['pending', 'loading'].includes(message.status || ''))
+    ) {
       list.value = data;
     }
   }
@@ -277,6 +304,10 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       }
     }
   });
+
+  function resumeGeneration(generationId: string) {
+    rawWsSend(JSON.stringify({ type: 'resume', generationId }));
+  }
 
   function syncRateLimitCountdown() {
     if (!rateLimitUntil.value) {
@@ -409,6 +440,8 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     startRateLimitCountdown,
     handleAuthReset,
     fetchGenerationSnapshot,
+    fetchActiveGenerationSnapshot,
+    resumeGeneration,
     upsertGenerationSnapshot,
     syncGenerationAfterReconnect,
     loadSessions,

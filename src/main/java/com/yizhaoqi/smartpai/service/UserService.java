@@ -274,6 +274,8 @@ public class UserService {
         }
         
         String resolvedTagId = resolveOrGenerateTagId(tagId, name);
+        requireSharedOrganization(resolvedTagId);
+        requireSharedOrganization(parentTag);
         
         // 如果指定了父标签，检查父标签是否存在
         if (parentTag != null && !parentTag.isEmpty()) {
@@ -320,6 +322,9 @@ public class UserService {
         
         // 验证所有标签是否存在
         for (String tagId : orgTags) {
+            if (isPrivateOrganization(tagId) && !tagId.equals(PRIVATE_TAG_PREFIX + user.getUsername())) {
+                throw new CustomException("不能分配其他用户的私人空间", HttpStatus.FORBIDDEN);
+            }
             if (!organizationTagRepository.existsByTagId(tagId)) {
                 throw new CustomException("Organization tag " + tagId + " not found", HttpStatus.NOT_FOUND);
             }
@@ -377,23 +382,11 @@ public class UserService {
         User user = userRepository.findByUsername(username)
                 .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
         
-        // 尝试从缓存获取
-        List<String> orgTags = orgTagCacheService.getUserOrgTags(username);
-        String primaryOrg = orgTagCacheService.getUserPrimaryOrg(username);
-        
-        // 如果缓存中没有，则从数据库获取
-        if (orgTags == null || orgTags.isEmpty()) {
-            orgTags = Arrays.asList(user.getOrgTags().split(","));
-            // 更新缓存
-            orgTagCacheService.cacheUserOrgTags(username, orgTags);
-        }
-        
-        if (primaryOrg == null || primaryOrg.isEmpty()) {
-            primaryOrg = user.getPrimaryOrg();
-            // 更新缓存
-            orgTagCacheService.cacheUserPrimaryOrg(username, primaryOrg);
-        }
-        
+        // 上传选项使用当前成员关系，不能将管理员管理范围或过期缓存当作成员关系。
+        List<String> orgTags = uploadOrgTags(user);
+        String primaryOrg = user.getPrimaryOrg() != null && orgTags.contains(user.getPrimaryOrg())
+                ? user.getPrimaryOrg() : null;
+
         // 获取组织标签的详细信息
         List<Map<String, Object>> orgTagDetails = new ArrayList<>();
         for (String tagId : orgTags) {
@@ -429,7 +422,7 @@ public class UserService {
                 .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
         
         // 检查该组织标签是否已分配给用户
-        Set<String> userTags = Arrays.stream(user.getOrgTags().split(",")).collect(Collectors.toSet());
+        Set<String> userTags = new HashSet<>(uploadOrgTags(user));
         if (!userTags.contains(primaryOrg)) {
             throw new CustomException("Organization tag not assigned to user", HttpStatus.BAD_REQUEST);
         }
@@ -504,6 +497,10 @@ public class UserService {
         List<Map<String, Object>> result = new ArrayList<>();
         
         for (OrganizationTag tag : tags) {
+            // 私人空间由账户自动维护，不作为团队组织管理、分配或挂接子组织。
+            if (isPrivateOrganization(tag.getTagId())) {
+                continue;
+            }
             Map<String, Object> node = new HashMap<>();
             node.put("tagId", tag.getTagId());
             node.put("name", tag.getName());
@@ -546,6 +543,9 @@ public class UserService {
             throw new CustomException("Only administrators can update organization tags", HttpStatus.FORBIDDEN);
         }
         
+        requireSharedOrganization(tagId);
+        requireSharedOrganization(parentTag);
+
         // 获取要更新的标签
         OrganizationTag tag = organizationTagRepository.findByTagId(tagId)
                 .orElseThrow(() -> new CustomException("Organization tag not found", HttpStatus.NOT_FOUND));
@@ -585,6 +585,38 @@ public class UserService {
         orgTagCacheService.invalidateAllEffectiveTagsCache();
         
         return updatedTag;
+    }
+
+    private boolean isPrivateOrganization(String tagId) {
+        return tagId != null && tagId.startsWith(PRIVATE_TAG_PREFIX);
+    }
+
+    private void requireSharedOrganization(String tagId) {
+        if (isPrivateOrganization(tagId)) {
+            throw new CustomException("私人空间由账户自动维护，不属于可管理的组织", HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    private List<String> uploadOrgTags(User user) {
+        if (user.getOrgTags() == null || user.getOrgTags().isBlank()) {
+            return List.of();
+        }
+        String privateTag = PRIVATE_TAG_PREFIX + user.getUsername();
+        return Arrays.stream(user.getOrgTags().split(","))
+                .map(String::trim)
+                .filter(tag -> !tag.isEmpty())
+                .filter(tag -> !isPrivateOrganization(tag) || privateTag.equals(tag))
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
+    /** 上传到组织必须是成员，管理员身份不授予向他人空间上传的权限。 */
+    public void validateUploadOrganization(String userId, String orgTag) {
+        User user = resolveUser(userId);
+        if (orgTag == null || !uploadOrgTags(user).contains(orgTag)) {
+            throw new CustomException("只能上传到自己的空间或已加入的组织", HttpStatus.FORBIDDEN);
+        }
+        getOrganizationTag(orgTag);
     }
 
     public boolean isAdminUser(String userId) {
@@ -640,6 +672,8 @@ public class UserService {
             throw new CustomException("Only administrators can delete organization tags", HttpStatus.FORBIDDEN);
         }
         
+        requireSharedOrganization(tagId);
+
         // 获取要删除的标签
         OrganizationTag tag = organizationTagRepository.findByTagId(tagId)
                 .orElseThrow(() -> new CustomException("Organization tag not found", HttpStatus.NOT_FOUND));

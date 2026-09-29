@@ -48,17 +48,24 @@ const params = computed(() => {
   return p;
 });
 
-watchEffect(() => {
-  getList();
-});
+let historyRequestId = 0;
+watch(params, getList, { immediate: true });
 
 async function getList() {
+  historyRequestId += 1;
+  const requestId = historyRequestId;
+  const messagesBeforeRequest = [...list.value];
   loading.value = true;
   const { error, data } = await request<Api.Chat.Message[]>({
     url: 'users/conversation',
     params: params.value
   });
-  if (!error) {
+  if (requestId !== historyRequestId) return;
+  const messagesUnchanged =
+    list.value.length === messagesBeforeRequest.length &&
+    list.value.every((message, index) => message === messagesBeforeRequest[index]);
+  const hasPending = list.value.some(message => ['pending', 'loading'].includes(message.status || ''));
+  if (!error && messagesUnchanged && !hasPending) {
     list.value = data;
   }
   loading.value = false;

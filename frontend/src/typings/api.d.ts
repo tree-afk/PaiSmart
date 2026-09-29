@@ -77,7 +77,7 @@ declare namespace Api {
 
     type List = Common.PaginatingQueryRecord<Item>;
 
-    type Details = Pick<Item, 'tagId' | 'name' | 'description'>;
+    type Details = Pick<Item, 'tagId' | 'name' | 'description' | 'uploadMaxSizeBytes' | 'uploadMaxSizeMb'>;
     type Mine = {
       orgTags: string[];
       primaryOrg: string;

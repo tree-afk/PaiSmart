@@ -29,6 +29,7 @@ const latestMessage = computed(() => {
   return list.value[list.value.length - 1] ?? {};
 });
 
+const preparingSession = ref(false);
 let generationStatusTimer: number | null = null;
 let lastStreamContentLength = 0;
 let lastStreamContentChangedAt = 0;
@@ -40,6 +41,7 @@ const isSending = computed(() => {
 });
 
 const sendDisabled = computed(() => {
+  if (preparingSession.value) return true;
   if (isSending.value) {
     return false;
   }
@@ -69,7 +71,8 @@ const cooldownText = computed(() => {
   return `${rateLimitRemainingSeconds} 秒后可重新发送`;
 });
 
-function findAssistantMessage(generationId?: string) {
+function findAssistantMessage(generationId?: string, payloadConversationId?: string, allowUnbound = false) {
+  if (payloadConversationId && payloadConversationId !== chatStore.conversationId) return null;
   if (generationId) {
     for (let i = list.value.length - 1; i >= 0; i -= 1) {
       const item = list.value[i];
@@ -80,7 +83,11 @@ function findAssistantMessage(generationId?: string) {
   }
 
   const latest = list.value[list.value.length - 1];
-  if (latest?.role === 'assistant') {
+  if (
+    latest?.role === 'assistant' &&
+    ['pending', 'loading'].includes(latest.status || '') &&
+    (!generationId || (allowUnbound && !latest.generationId))
+  ) {
     return latest;
   }
 
@@ -95,7 +102,7 @@ function handleStartPayload(assistant: Api.Chat.Message, payload: Record<string,
   }
 }
 
-function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<string, any>) {
+async function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<string, any>) {
   if (payload.status === 'finished' && assistant.status !== 'error') {
     assistant.status = 'finished';
   } else if (payload.status === 'failed') {
@@ -107,6 +114,13 @@ function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<st
   }
   markExecutingToolsAsSuccess(assistant);
   stopGenerationStatusMonitor();
+  // Reconcile any chunks missed while reconnecting with the final server snapshot.
+  if (assistant.generationId && payload.status === 'finished') {
+    const snapshot = await chatStore.fetchGenerationSnapshot(assistant.generationId);
+    if (snapshot && snapshot.status !== 'STREAMING' && list.value.includes(assistant)) {
+      chatStore.upsertGenerationSnapshot(snapshot);
+    }
+  }
 }
 
 function handleStopPayload(assistant: Api.Chat.Message) {
@@ -149,22 +163,20 @@ function stopGenerationStatusMonitor() {
   }
 }
 
+function isCurrentPending(assistant: Api.Chat.Message) {
+  return list.value.includes(assistant) && ['pending', 'loading'].includes(assistant.status || '');
+}
+
 function startGenerationStatusMonitor() {
   stopGenerationStatusMonitor();
-  const startedAt = Date.now();
-  lastStreamContentLength = 0;
-  lastStreamContentChangedAt = startedAt;
+  const assistant = latestMessage.value;
+  const targetConversationId = chatStore.conversationId;
+  const question = list.value[list.value.length - 2]?.content;
+  lastStreamContentLength = assistant.content?.length || 0;
+  lastStreamContentChangedAt = Date.now();
+  let checking = false;
   generationStatusTimer = window.setInterval(async () => {
-    const assistant = findAssistantMessage(latestMessage.value?.generationId);
-    if (!assistant || assistant.role !== 'assistant') {
-      stopGenerationStatusMonitor();
-      return;
-    }
-    if (!['pending', 'loading'].includes(assistant.status || '')) {
-      stopGenerationStatusMonitor();
-      return;
-    }
-    if (Date.now() - startedAt > 130_000) {
+    if (!isCurrentPending(assistant)) {
       stopGenerationStatusMonitor();
       return;
     }
@@ -173,21 +185,38 @@ function startGenerationStatusMonitor() {
       lastStreamContentChangedAt = Date.now();
       return;
     }
-    if (Date.now() - lastStreamContentChangedAt < 8000) {
-      return;
-    }
+    if (checking || Date.now() - lastStreamContentChangedAt < 8000) return;
 
-    const snapshot = await chatStore.fetchGenerationSnapshot(assistant.generationId || '');
-    if (!snapshot || snapshot.status === 'STREAMING') {
-      return;
+    checking = true;
+    try {
+      const snapshot = assistant.generationId
+        ? await chatStore.fetchGenerationSnapshot(assistant.generationId)
+        : await chatStore.fetchActiveGenerationSnapshot();
+      if (!isCurrentPending(assistant) || chatStore.conversationId !== targetConversationId) return;
+      if (snapshot && snapshot.conversationId === targetConversationId && snapshot.question === question) {
+        if (!assistant.generationId) {
+          assistant.generationId = snapshot.generationId;
+          if (snapshot.status === 'STREAMING') chatStore.resumeGeneration(snapshot.generationId);
+        }
+        // A terminal snapshot is authoritative; replacing partial streaming text could duplicate queued chunks.
+        if (snapshot.status !== 'STREAMING') {
+          chatStore.upsertGenerationSnapshot(snapshot);
+          if (assistant.status === 'error') markExecutingToolsAsFailed(assistant);
+          else markExecutingToolsAsSuccess(assistant);
+          stopGenerationStatusMonitor();
+          return;
+        }
+      }
+    } catch {
+      // A temporary snapshot failure must not stop subsequent checks.
+    } finally {
+      checking = false;
     }
-    chatStore.upsertGenerationSnapshot(snapshot);
-    const refreshedAssistant = findAssistantMessage(snapshot.generationId);
-    if (refreshedAssistant?.status === 'finished') {
-      markExecutingToolsAsSuccess(refreshedAssistant);
-      stopGenerationStatusMonitor();
-    } else if (refreshedAssistant?.status === 'error') {
-      markExecutingToolsAsFailed(refreshedAssistant);
+    if (isCurrentPending(assistant) && Date.now() - lastStreamContentChangedAt > 130_000) {
+      assistant.status = 'error';
+      assistant.content ||= '暂时无法同步回答，请刷新聊天记录查看结果。';
+      markExecutingToolsAsFailed(assistant);
+      window.$message?.warning('回答同步超时，请刷新聊天记录查看结果');
       stopGenerationStatusMonitor();
     }
   }, 2000);
@@ -270,7 +299,7 @@ watch(wsData, val => {
     return;
   }
 
-  const assistant = findAssistantMessage(payload.generationId);
+  const assistant = findAssistantMessage(payload.generationId, payload.conversationId, payload.type === 'start');
 
   if (!assistant) return;
 
@@ -305,6 +334,7 @@ watch(wsData, val => {
 });
 
 const handleSend = async () => {
+  if (sendDisabled.value) return;
   if (isRateLimited.value) {
     window.$message?.warning(`当前发送受限，${cooldownText.value}`);
     return;
@@ -329,19 +359,31 @@ const handleSend = async () => {
     return;
   }
 
+  if (!chatStore.conversationId) {
+    preparingSession.value = true;
+    try {
+      if (!(await chatStore.createNewSession())) return;
+    } finally {
+      preparingSession.value = false;
+    }
+  }
+
   list.value.push({
     content: input.value.message,
-    role: 'user'
+    role: 'user',
+    conversationId: chatStore.conversationId
   });
   list.value.push({
     content: '',
     role: 'assistant',
     status: 'pending',
+    conversationId: chatStore.conversationId,
     toolEvents: []
   });
-  chatStore.wsSend(input.value.message);
+  chatStore.wsSend(
+    JSON.stringify({ type: 'chat', message: input.value.message, conversationId: chatStore.conversationId })
+  );
   input.value.message = '';
-  startGenerationStatusMonitor();
 };
 
 const inputRef = ref();
@@ -368,6 +410,15 @@ const handShortcut = (e: KeyboardEvent) => {
     } else insertNewline();
   }
 };
+
+watch(
+  () => (isSending.value ? latestMessage.value : null),
+  sending => {
+    if (sending) startGenerationStatusMonitor();
+    else stopGenerationStatusMonitor();
+  },
+  { immediate: true }
+);
 
 onUnmounted(() => {
   stopGenerationStatusMonitor();

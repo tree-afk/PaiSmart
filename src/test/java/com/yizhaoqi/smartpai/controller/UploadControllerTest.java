@@ -166,4 +166,30 @@ class UploadControllerTest {
         verify(uploadService, never()).mergeChunks(anyString(), anyString(), anyString());
         verify(kafkaTemplate, never()).executeInTransaction(any());
     }
+    @Test
+    void uploadRejectsUnassignedOrganizationBeforeWritingAnyChunk() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "test.pdf", "application/pdf", "demo".getBytes());
+        doThrow(new com.yizhaoqi.smartpai.exception.CustomException("只能上传到自己的空间或已加入的组织",
+                org.springframework.http.HttpStatus.FORBIDDEN))
+                .when(userService).validateUploadOrganization("1", "PRIVATE_other");
+        // Later chunks must be checked too, not just chunk zero.
+        var response = uploadController.uploadChunk("md5", 1, 20L, "test.pdf", 2,
+                "PRIVATE_other", false, file, "1");
+        assertEquals(403, response.getStatusCode().value());
+        verifyNoInteractions(uploadService);
+    }
+
+    @Test
+    void implicitPrimaryOrganizationIsAlsoCheckedBeforeUploading() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "test.pdf", "application/pdf", "demo".getBytes());
+        when(userService.getUserPrimaryOrg("1")).thenReturn("REMOVED_TEAM");
+        doThrow(new com.yizhaoqi.smartpai.exception.CustomException("组织未分配",
+                org.springframework.http.HttpStatus.FORBIDDEN))
+                .when(userService).validateUploadOrganization("1", "REMOVED_TEAM");
+        var response = uploadController.uploadChunk("md5", 1, 20L, "test.pdf", 2,
+                null, false, file, "1");
+        assertEquals(403, response.getStatusCode().value());
+        verifyNoInteractions(uploadService);
+    }
+
 }

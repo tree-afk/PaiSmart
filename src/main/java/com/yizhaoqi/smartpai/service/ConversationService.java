@@ -141,6 +141,14 @@ public class ConversationService {
         sessionRepository.save(session);
     }
 
+    public void validateConversationOwner(Long userId, String conversationId) {
+        ConversationSession session = sessionRepository.findByConversationId(conversationId)
+                .orElseThrow(() -> new CustomException("对话不存在", HttpStatus.NOT_FOUND));
+        if (!userId.equals(session.getUser().getId())) {
+            throw new CustomException("无权访问此对话", HttpStatus.FORBIDDEN);
+        }
+    }
+
     public void switchCurrentConversation(Long userId, String conversationId) {
         if (!sessionRepository.existsByConversationId(conversationId)) {
             throw new CustomException("对话不存在", HttpStatus.NOT_FOUND);

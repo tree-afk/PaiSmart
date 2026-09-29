@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import type { FormRules } from 'naive-ui';
-
 defineOptions({
   name: 'OrgTagSettingDialog'
 });
@@ -14,7 +12,6 @@ const emit = defineEmits<{ submitted: [] }>();
 const visible = defineModel<boolean>('visible', { default: false });
 const loading = ref(false);
 const { formRef, validate, restoreValidation } = useNaiveForm();
-const { defaultRequiredRule } = useFormRules();
 
 type Model = {
   orgTags: string[];
@@ -28,16 +25,9 @@ function createDefaultModel(): Model {
   };
 }
 
-const rules = ref<FormRules>({
-  orgTags: defaultRequiredRule
-});
-
-const privateOrgTag = ref<string[]>([]);
 async function handleUpdateModelWhenEdit() {
   model.value = createDefaultModel();
-  model.value.orgTags = props.rowData.orgTags.map(tag => tag.tagId!);
-  // 备份默认的私人组织标签，防止被误删
-  privateOrgTag.value = props.rowData.orgTags.filter(tag => tag.tagId!.startsWith('PRIVATE_')).map(tag => tag.tagId!);
+  model.value.orgTags = props.rowData.orgTags.filter(tag => !tag.tagId!.startsWith('PRIVATE_')).map(tag => tag.tagId!);
 }
 
 function close() {
@@ -47,7 +37,6 @@ function close() {
 async function handleSubmit() {
   await validate();
   loading.value = true;
-  model.value.orgTags = Array.from(new Set([...model.value.orgTags, ...privateOrgTag.value]));
   const res = await request({
     method: 'PUT',
     url: `/admin/users/${props.rowData.userId}/org-tags`,
@@ -79,13 +68,14 @@ watch(visible, () => {
     class="w-500px!"
     @positive-click="handleSubmit"
   >
-    <NForm ref="formRef" :model="model" :rules="rules" label-placement="left" :label-width="100" mt-10>
+    <NForm ref="formRef" :model="model" label-placement="left" :label-width="100" mt-10>
       <NFormItem label="用户名" path="username">
         <NInput :value="rowData.username" readonly />
       </NFormItem>
       <NFormItem label="组织标签" path="orgTags">
         <OrgTagCascader v-model:value="model.orgTags" multiple exclude-private />
       </NFormItem>
+      <div class="text-12px text-gray-500">私人空间由账户自动维护，无需分配；此处仅设置加入的组织。</div>
     </NForm>
     <template #action>
       <NSpace :size="16">

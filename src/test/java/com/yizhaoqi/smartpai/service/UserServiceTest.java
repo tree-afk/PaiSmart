@@ -258,4 +258,114 @@ class UserServiceTest {
         assertEquals(10, ((List<?>) result.get("content")).size());
         verify(userRepository).findAll(any(Sort.class));
     }
+    @Test
+    void organizationTreeContainsTeamsButNoPrivateSpacesAtAnyLevel() {
+        OrganizationTag team = tag("TEAM_A");
+        when(organizationTagRepository.findByParentTag(null))
+                .thenReturn(List.of(team, tag("PRIVATE_alice")));
+        when(organizationTagRepository.findByParentTag("TEAM_A"))
+                .thenReturn(List.of(tag("TEAM_CHILD"), tag("PRIVATE_bob")));
+        List<Map<String, Object>> tree = userService.getOrganizationTagTree();
+        assertEquals(1, tree.size());
+        assertEquals("TEAM_A", tree.get(0).get("tagId"));
+        var children = (List<?>) tree.get(0).get("children");
+        assertEquals(1, children.size());
+        assertEquals("TEAM_CHILD", ((Map<?, ?>) children.get(0)).get("tagId"));
+        verify(organizationTagRepository, never()).findByParentTag("PRIVATE_alice");
+    }
+
+    @Test
+    void uploadMembershipAppliesToAdminsAndNormalUsers() {
+        User user = organizationUser();
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        when(organizationTagRepository.findByTagId("TEAM_A")).thenReturn(Optional.of(tag("TEAM_A")));
+        when(organizationTagRepository.findByTagId("PRIVATE_alice")).thenReturn(Optional.of(tag("PRIVATE_alice")));
+        for (User.Role role : List.of(User.Role.ADMIN, User.Role.USER)) {
+            user.setRole(role);
+            userService.validateUploadOrganization("1", "TEAM_A");
+            userService.validateUploadOrganization("1", "PRIVATE_alice");
+            for (String forbidden : List.of("TEAM_OTHER", "PRIVATE_bob", "TEAM_PARENT", "")) {
+                CustomException error = assertThrows(CustomException.class,
+                        () -> userService.validateUploadOrganization("1", forbidden));
+                assertEquals(HttpStatus.FORBIDDEN, error.getStatus());
+            }
+        }
+    }
+
+    @Test
+    void currentUserOptionsIgnoreStaleCacheAndForeignPrivateMemberships() {
+        User user = organizationUser();
+        user.setPrimaryOrg("TEAM_REMOVED");
+        when(userRepository.findByUsername("alice")).thenReturn(Optional.of(user));
+        when(orgTagCacheService.getUserOrgTags("alice")).thenReturn(List.of("TEAM_REMOVED"));
+        when(organizationTagRepository.findByTagId("TEAM_A")).thenReturn(Optional.of(tag("TEAM_A")));
+        when(organizationTagRepository.findByTagId("PRIVATE_alice")).thenReturn(Optional.of(tag("PRIVATE_alice")));
+        Map<String, Object> result = userService.getUserOrgTags("alice");
+        assertEquals(List.of("TEAM_A", "PRIVATE_alice"), result.get("orgTags"));
+        assertNull(result.get("primaryOrg"));
+        assertEquals(2, ((List<?>) result.get("orgTagDetails")).size());
+        verify(organizationTagRepository, never()).findByTagId("PRIVATE_bob");
+    }
+
+    @Test
+    void userWithoutMembershipHasNoUploadOptions() {
+        User user = organizationUser();
+        user.setOrgTags(null);
+        when(userRepository.findByUsername("alice")).thenReturn(Optional.of(user));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        assertEquals(List.of(), userService.getUserOrgTags("alice").get("orgTagDetails"));
+        assertEquals(HttpStatus.FORBIDDEN, assertThrows(CustomException.class,
+                () -> userService.validateUploadOrganization("1", "TEAM_A")).getStatus());
+    }
+
+    @Test
+    void privateSpacesCannotBeManagedAsTeams() {
+        User admin = organizationUser();
+        admin.setRole(User.Role.ADMIN);
+        when(userRepository.findByUsername("admin")).thenReturn(Optional.of(admin));
+        assertThrows(CustomException.class,
+                () -> userService.createOrganizationTag("PRIVATE_new", "Test", "", null, null, "admin"));
+        assertThrows(CustomException.class,
+                () -> userService.createOrganizationTag("TEAM_NEW", "Test", "", "PRIVATE_alice", null, "admin"));
+        assertThrows(CustomException.class,
+                () -> userService.updateOrganizationTag("PRIVATE_alice", "Test", "", null, null, "admin"));
+        assertThrows(CustomException.class,
+                () -> userService.updateOrganizationTag("TEAM_A", "Test", "", "PRIVATE_alice", null, "admin"));
+        assertThrows(CustomException.class,
+                () -> userService.deleteOrganizationTag("PRIVATE_alice", "admin"));
+        verify(organizationTagRepository, never()).save(any());
+        verify(organizationTagRepository, never()).delete(any());
+    }
+
+    @Test
+    void assigningTeamsPreservesOwnPrivateSpaceButRejectsAnotherUsersSpace() {
+        User user = organizationUser();
+        user.setOrgTags("TEAM_A,PRIVATE_alice");
+        User admin = new User();
+        admin.setRole(User.Role.ADMIN);
+        when(userRepository.findByUsername("admin")).thenReturn(Optional.of(admin));
+        when(userRepository.findById(1L)).thenReturn(Optional.of(user));
+        assertEquals(HttpStatus.FORBIDDEN, assertThrows(CustomException.class,
+                () -> userService.assignOrgTagsToUser(1L, List.of("PRIVATE_bob"), "admin")).getStatus());
+        verify(userRepository, never()).save(any());
+        userService.assignOrgTagsToUser(1L, List.of(), "admin");
+        assertEquals("PRIVATE_alice", user.getOrgTags());
+    }
+
+    private User organizationUser() {
+        User user = new User();
+        user.setId(1L);
+        user.setUsername("alice");
+        user.setRole(User.Role.ADMIN);
+        user.setOrgTags("TEAM_A, PRIVATE_alice,TEAM_A,PRIVATE_bob");
+        return user;
+    }
+
+    private OrganizationTag tag(String id) {
+        OrganizationTag tag = new OrganizationTag();
+        tag.setTagId(id);
+        tag.setName(id);
+        return tag;
+    }
+
 }

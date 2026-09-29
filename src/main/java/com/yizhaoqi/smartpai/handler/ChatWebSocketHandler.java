@@ -55,8 +55,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         String userId = extractUserId(jwtToken);
         chatSessionRegistry.registerSession(userId, session);
-        logger.info("WebSocket连接已建立，用户ID: {}，会话ID: {}，URI路径: {}",
-                userId, session.getId(), session.getUri().getPath());
+        logger.info("WebSocket连接已建立，用户ID: {}，会话ID: {}", userId, session.getId());
 
         // 发送会话ID到前端
         try {
@@ -96,6 +95,17 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                     String internalToken = (String) jsonMessage.get("_internal_cmd_token");
                     String generationId = (String) jsonMessage.get("generationId");
                     
+                    if ("chat".equals(messageType) && jsonMessage.get("message") instanceof String content
+                            && jsonMessage.get("conversationId") instanceof String conversationId) {
+                        chatHandler.processMessage(userId, content, session, conversationId);
+                        return;
+                    }
+
+                    if ("resume".equals(messageType) && generationId != null) {
+                        chatSessionRegistry.resumeGeneration(userId, generationId, session);
+                        return;
+                    }
+
                     // 只有包含正确内部令牌的停止指令才处理
                     if ("stop".equals(messageType) && INTERNAL_CMD_TOKEN.equals(internalToken)) {
                         // 处理停止指令
