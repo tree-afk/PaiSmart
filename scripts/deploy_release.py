@@ -30,8 +30,31 @@ def git(*args):
     return subprocess.check_output(['git', '-C', str(ROOT), *args], text=True).strip()
 
 
+def deploy_setting(name, default=None):
+    """Read a deploy setting from the environment, then the git-ignored local .env."""
+    value = os.environ.get(name)
+    env_file = ROOT / '.env'
+    if not value and env_file.is_file():
+        for line in env_file.read_text(encoding='utf-8').splitlines():
+            key, sep, raw = line.partition('=')
+            if sep and key.strip() == name:
+                value = raw.strip().strip('"\'')
+                break
+    return value or default
+
+
+def ssh_target():
+    """Server address and key path never live in the repo; see scripts/DEPLOY.md."""
+    host = deploy_setting('DEPLOY_SERVER_HOST')
+    key = deploy_setting('DEPLOY_SERVER_KEY')
+    if not host or not key:
+        raise RuntimeError('Set DEPLOY_SERVER_HOST and DEPLOY_SERVER_KEY in the environment or local .env')
+    user = deploy_setting('DEPLOY_SERVER_USER', 'root')
+    return user + '@' + host, key
+
+
 def main():
-    action = sys.argv[1] if len(sys.argv) > 1 else 'all'
+    action =sys.argv[1] if len(sys.argv) > 1 else 'all'
     if action not in ('all', 'plan', 'preflight', 'prepare', 'publish', 'status', 'verify', 'rollback'):
         raise RuntimeError('Use plan/preflight/prepare/publish/all/status/verify/rollback')
     release_id = os.environ.get('RELEASE_ID')
@@ -49,9 +72,8 @@ def main():
                                     'detach remote worker: switch, login/API/static checks, rollback on failure'],
                           'note': 'No local writes or SSH/SCP executed'}, indent=2))
         return
-    host = 'root@62.234.82.38'
-    key = '/Users/itwanger/Desktop/paicoding.pem'
-    opts = ['-i', key, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+    host, key = ssh_target()
+    opts =['-i', key, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
             '-o', 'StrictHostKeyChecking=yes', '-o', 'ServerAliveInterval=15']
 
     def ssh(command, source=None, capture=False):

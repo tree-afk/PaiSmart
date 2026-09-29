@@ -28,6 +28,24 @@ When a new agent thread starts in this repo, check these in order:
 
 Do not assume generic Spring Boot conventions before checking the actual local setup.
 
+## Production Secrets (Hard Rule)
+
+This repository is public on GitHub. Anything committed here is published.
+
+Never write any of the following into a tracked file, a commit, a commit message, or a PR:
+
+- production server IP addresses or hostnames used for SSH
+- SSH login users paired with a production host (for example `root@<host>`)
+- local paths to SSH private keys (`*.pem`, `id_*`) or the key contents
+- passwords, API keys, tokens, or any value copied from `.env` / `scripts/.deploy/`
+
+Rules:
+
+- Deploy scripts must read connection settings from environment variables or the git-ignored repo root `.env`: `DEPLOY_SERVER_HOST`, `DEPLOY_SERVER_USER`, `DEPLOY_SERVER_KEY`. Docs and examples use placeholders such as `<server-ip>`.
+- Before every commit, scan the staged diff for IP addresses, `root@`, `.pem`, and key-like strings. If any production value appears, stop and remove it before committing.
+- Do not commit or push unless the user explicitly asks in the current task. Never force-push or rewrite history without explicit user confirmation.
+- If you find a production value already committed, do not copy it into your reply; report the file and line and ask the user how to handle it.
+
 ## Local Runtime Rules
 
 ### Backend

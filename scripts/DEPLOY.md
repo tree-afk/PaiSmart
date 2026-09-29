@@ -4,6 +4,7 @@
 
 - 本地构建：先完成测试、`mvn package -DskipTests` 和前端 `pnpm build`。发布器不编译、不提交、不推送。
 - 显式设置唯一 `RELEASE_ID`；同一次发布的所有步骤使用相同 ID。
+- 服务器连接：从环境变量或仓库根目录 `.env`（已被 git 忽略）读取 `DEPLOY_SERVER_HOST`、`DEPLOY_SERVER_USER`（默认 `root`）、`DEPLOY_SERVER_KEY`，与 `deploy-front.sh` 共用。服务器地址和私钥路径禁止写进仓库。
 - `DRY_RUN=0 ... preflight`：只读检查线上 PID、现有登录/API、首页资源、空间、工具。
 - `DRY_RUN=0 ... prepare`：冻结并上传构建产物、校验 SHA256、备份 MySQL/JAR/dist、提前解压新前端。当前服务保持运行。
 - `DRY_RUN=0 ... publish`：发布已 prepare 的版本。短停旧 Java 进程、替换产物、用原 JVM 命令和线上 `.env` 启动；验证本机/公网登录和只读 API、前端入口资源。
