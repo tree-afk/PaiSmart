@@ -57,6 +57,14 @@ public class KafkaConfig {
         return fileProcessingGroupId;
     }
 
+    public String getFileProcessingDltTopic() {
+        return fileProcessingDltTopic;
+    }
+
+    public String getDeadLetterGroupId() {
+        return fileProcessingGroupId + "-dlt";
+    }
+
     @Bean
     public NewTopic fileProcessingNewTopic() {
         return TopicBuilder.name(fileProcessingTopic)
@@ -84,6 +92,8 @@ public class KafkaConfig {
         config.put(ProducerConfig.ACKS_CONFIG, "all"); // 全部 ISR 落盘才确认
         config.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true); // 幂等生产者
         config.put(ProducerConfig.RETRIES_CONFIG, 3); // 自动重试 3 次
+        // Kafka 不可用时最多阻塞 10 秒，失败的消息留在 outbox 里由定时任务补发，不让请求线程长时间挂住
+        config.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 10_000);
 
         DefaultKafkaProducerFactory<String, Object> factory = new DefaultKafkaProducerFactory<>(config);
         // 设置事务前缀，启用事务能力
@@ -105,6 +115,8 @@ public class KafkaConfig {
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
         config.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
+        // 生产端用事务发送，消费端只读已提交的消息，否则事务中止的消息也会被消费
+        config.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
         return new DefaultKafkaConsumerFactory<>(config);
     }
 
@@ -124,6 +136,18 @@ public class KafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
+        return factory;
+    }
+
+    /**
+     * 死信主题专用监听器工厂：落库失败重试两次后只记日志，不再转发到死信主题，避免死信消费失败时自我循环
+     */
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, Object> deadLetterListenerContainerFactory(
+            ConsumerFactory<String, Object> consumerFactory) {
+        ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory);
+        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1000L, 2)));
         return factory;
     }
 }

@@ -1,11 +1,11 @@
 package com.yizhaoqi.smartpai.service;
 
-import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
+import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
@@ -21,7 +21,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,6 +29,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -94,10 +95,7 @@ public class DocumentService {
     private VectorizationService vectorizationService;
 
     @Autowired
-    private KafkaTemplate<String, Object> kafkaTemplate;
-
-    @Autowired
-    private KafkaConfig kafkaConfig;
+    private FileProcessingOutboxService fileProcessingOutboxService;
 
     @Autowired(required = false)
     private ApplicationEventPublisher eventPublisher;
@@ -260,12 +258,21 @@ public class DocumentService {
         }
     }
 
+    /**
+     * 清理文件已有的分块和索引，供重新解析前调用，保证重复处理不会产生重复分块。
+     * ES 只清理线上别名，保留旧版本索引中的数据用于回滚；ES 清理失败直接抛出，让任务重试而不是带着旧数据继续
+     */
+    public void clearIndexedData(String fileMd5) {
+        elasticsearchService.deleteByFileMd5(KnowledgeIndexNames.ALIAS, fileMd5);
+        documentVectorRepository.deleteByFileMd5(fileMd5);
+        invalidatePdfSinglePagePreviewCache(fileMd5);
+        logger.info("已清理文件旧分块和索引: fileMd5={}", fileMd5);
+    }
+
     @Transactional
     public FileUpload enqueueAsyncVectorizationRetry(String fileMd5, String requesterId) {
         FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
                 .orElseThrow(() -> new RuntimeException("文件不存在"));
-
-        markVectorizationProcessing(fileUpload, true);
 
         FileProcessingTask task = new FileProcessingTask(
                 fileUpload.getFileMd5(),
@@ -278,46 +285,20 @@ public class DocumentService {
                 requesterId
         );
 
-        kafkaTemplate.executeInTransaction(kt -> {
-            kt.send(kafkaConfig.getFileProcessingTopic(), task);
-            return true;
-        });
+        // 状态改成待处理和待投递消息同一事务提交，提交后再投递 Kafka
+        fileProcessingOutboxService.enqueueVectorization(fileUpload, task, true);
 
-        logger.info("已发送异步向量化重试任务: fileMd5={}, requesterId={}", fileMd5, requesterId);
+        logger.info("已提交异步向量化重试任务: fileMd5={}, requesterId={}", fileMd5, requesterId);
         return fileUpload;
     }
 
-    @Transactional
-    public void markVectorizationProcessing(String fileMd5, boolean resetActualUsage) {
-        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
-        markVectorizationProcessing(fileUpload, resetActualUsage);
-    }
-
-    @Transactional
-    public void markVectorizationCompleted(String fileMd5, VectorizationService.VectorizationUsageResult result) {
-        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
-        markVectorizationCompleted(fileUpload, result);
-    }
-
-    @Transactional
-    public void markVectorizationFailed(String fileMd5, String errorMessage) {
-        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
-        markVectorizationFailed(fileUpload, errorMessage);
-    }
-
-    @Transactional
-    public void markVectorizationFailed(String fileMd5, Throwable error) {
-        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
-        markVectorizationFailed(fileUpload, error);
-    }
-
     private void markVectorizationProcessing(FileUpload fileUpload, boolean resetActualUsage) {
+        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
         fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_PROCESSING);
         fileUpload.setVectorizationErrorMessage(null);
+        // 同步重建也记下开始时间和心跳，避免定时任务按上一轮的旧心跳把它误判为卡住
+        fileUpload.setProcessingStartedAt(now);
+        fileUpload.setHeartbeatAt(now);
         if (resetActualUsage) {
             fileUpload.setActualEmbeddingTokens(null);
             fileUpload.setActualChunkCount(null);
@@ -343,7 +324,14 @@ public class DocumentService {
         markVectorizationFailed(fileUpload, resolveVectorizationErrorMessage(error));
     }
 
-    private String resolveVectorizationErrorMessage(Throwable error) {
+    /**
+     * 把向量化异常转成给用户看的失败原因（取最深一层的异常信息，截断到字段长度）
+     */
+    public static String vectorizationErrorMessageOf(Throwable error) {
+        return trimVectorizationErrorMessage(resolveVectorizationErrorMessage(error));
+    }
+
+    private static String resolveVectorizationErrorMessage(Throwable error) {
         Throwable current = error;
         String deepestMessage = null;
 
@@ -369,7 +357,7 @@ public class DocumentService {
         return deepestMessage;
     }
 
-    private String trimVectorizationErrorMessage(String errorMessage) {
+    private static String trimVectorizationErrorMessage(String errorMessage) {
         if (errorMessage == null || errorMessage.isBlank()) {
             return "向量化失败，请稍后重试";
         }

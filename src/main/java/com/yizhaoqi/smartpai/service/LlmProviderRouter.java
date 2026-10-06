@@ -3,22 +3,28 @@ package com.yizhaoqi.smartpai.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.client.resilience.ModelCallGuard;
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
+import com.yizhaoqi.smartpai.client.resilience.ModelWebClientFactory;
 import com.yizhaoqi.smartpai.config.AiProperties;
+import com.yizhaoqi.smartpai.config.ModelCallProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 @Service
 public class LlmProviderRouter {
@@ -33,17 +39,26 @@ public class LlmProviderRouter {
     private final UsageQuotaService usageQuotaService;
     private final ModelProviderConfigService modelProviderConfigService;
     private final ObjectMapper objectMapper;
+    private final ModelWebClientFactory webClientFactory;
+    private final ModelCallGuard modelCallGuard;
+    private final ModelCallProperties modelCallProperties;
 
     public LlmProviderRouter(AiProperties aiProperties,
                              RateLimitService rateLimitService,
                              UsageQuotaService usageQuotaService,
                              ModelProviderConfigService modelProviderConfigService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             ModelWebClientFactory webClientFactory,
+                             ModelCallGuard modelCallGuard,
+                             ModelCallProperties modelCallProperties) {
         this.aiProperties = aiProperties;
         this.rateLimitService = rateLimitService;
         this.usageQuotaService = usageQuotaService;
         this.modelProviderConfigService = modelProviderConfigService;
         this.objectMapper = objectMapper;
+        this.webClientFactory = webClientFactory;
+        this.modelCallGuard = modelCallGuard;
+        this.modelCallProperties = modelCallProperties;
     }
 
     public StreamHandle streamResponse(String requesterId,
@@ -54,8 +69,8 @@ public class LlmProviderRouter {
                                        Consumer<Throwable> onError,
                                        Consumer<StreamCompletion> onComplete) {
 
-        ModelProviderConfigService.ActiveProviderView provider = modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
-        Map<String, Object> request = buildRequest(provider.model(), userMessage, context, history);
+        List<ModelProviderConfigService.ActiveProviderView> chain = providerChain();
+        Map<String, Object> request = buildRequest(chain.get(0).model(), userMessage, context, history);
         @SuppressWarnings("unchecked")
         List<Map<String, String>> messages = (List<Map<String, String>>) request.get("messages");
         int estimatedPromptTokens = usageQuotaService.estimateChatTokens(messages);
@@ -65,15 +80,12 @@ public class LlmProviderRouter {
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, maxCompletionTokens);
         StreamUsageTracker usageTracker = new StreamUsageTracker(reservation, estimatedPromptTokens);
+        AtomicReference<ModelProviderConfigService.ActiveProviderView> usedProvider = new AtomicReference<>(chain.get(0));
 
         try {
-            Disposable subscription = buildClient(provider)
-                    .post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(request)
-                    .retrieve()
-                    .bodyToFlux(String.class)
+            Disposable subscription = withFailover(chain, 0, ModelCallPriority.ONLINE, streamTimeout(),
+                    new AtomicBoolean(false), usedProvider,
+                    provider -> streamChatCompletions(provider, request))
                     .subscribe(
                             chunk -> processChunk(chunk, usageTracker, onChunk),
                             error -> {
@@ -83,8 +95,8 @@ public class LlmProviderRouter {
                             () -> {
                                 settleUsage(usageTracker);
                                 logger.info("LLM 流式响应完成: provider={}, model={}, finishReason={}, promptTokens={}, completionTokens={}, responseChars={}",
-                                        provider.provider(),
-                                        provider.model(),
+                                        usedProvider.get().provider(),
+                                        usedProvider.get().model(),
                                         usageTracker.finishReason == null ? "unknown" : usageTracker.finishReason,
                                         usageTracker.promptTokens,
                                         usageTracker.completionTokens,
@@ -189,28 +201,44 @@ public class LlmProviderRouter {
                                        List<Map<String, Object>> messages,
                                        List<AgentToolRegistry.AgentTool> tools,
                                        int maxCompletionTokens) {
-        ModelProviderConfigService.ActiveProviderView provider =
-                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
-        Map<String, Object> request = buildReActRequest(provider.model(), messages, tools, maxCompletionTokens, false);
+        return completeReActTurn(requesterId, messages, tools, maxCompletionTokens, ModelCallPriority.ONLINE);
+    }
+
+    /**
+     * @param priority 后台任务（上下文生成、冲突确认、离线评测）传 BACKGROUND，QPS 紧张时让位给在线问答
+     */
+    public ReActTurn completeReActTurn(String requesterId,
+                                       List<Map<String, Object>> messages,
+                                       List<AgentToolRegistry.AgentTool> tools,
+                                       int maxCompletionTokens,
+                                       ModelCallPriority priority) {
+        List<ModelProviderConfigService.ActiveProviderView> chain = providerChain();
+        Map<String, Object> request = buildReActRequest(chain.get(0).model(), messages, tools, maxCompletionTokens, false);
 
         int estimatedPromptTokens = estimateObjectMessagesTokens(messages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, maxCompletionTokens);
 
+        AtomicReference<ModelProviderConfigService.ActiveProviderView> usedProvider = new AtomicReference<>(chain.get(0));
         try {
-            String responseBody = buildClient(provider)
-                    .post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(request)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block(Duration.ofSeconds(90));
+            String responseBody = withFailover(chain, 0, priority,
+                    Duration.ofSeconds(Math.max(modelCallProperties.getTimeout().getLlmBlockingSeconds(), 1L)),
+                    new AtomicBoolean(false), usedProvider,
+                    provider -> webClientFactory.clientFor(ModelProviderConfigService.SCOPE_LLM, provider)
+                            .post()
+                            .uri("/chat/completions")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .bodyValue(withModel(request, provider))
+                            .retrieve()
+                            .bodyToMono(String.class)
+                            .flux())
+                    .next()
+                    .block();
             ReActTurn turn = parseReActTurn(responseBody, estimatedPromptTokens);
             usageQuotaService.settleReservation(reservation, turn.promptTokens() + turn.completionTokens());
             logger.info("ReAct 回合完成: provider={}, model={}, finishReason={}, toolCalls={}, contentChars={}",
-                    provider.provider(), provider.model(), turn.finishReason(), turn.toolCalls().size(), turn.content().length());
+                    usedProvider.get().provider(), usedProvider.get().model(), turn.finishReason(), turn.toolCalls().size(), turn.content().length());
             return turn;
         } catch (Exception exception) {
             usageQuotaService.abortReservation(reservation);
@@ -225,23 +253,19 @@ public class LlmProviderRouter {
                                         Consumer<String> onChunk,
                                         Consumer<Throwable> onError,
                                         Consumer<ReActTurn> onComplete) {
-        ModelProviderConfigService.ActiveProviderView provider =
-                modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM);
-        Map<String, Object> request = buildReActRequest(provider.model(), messages, tools, maxCompletionTokens, true);
+        List<ModelProviderConfigService.ActiveProviderView> chain = providerChain();
+        Map<String, Object> request = buildReActRequest(chain.get(0).model(), messages, tools, maxCompletionTokens, true);
         int estimatedPromptTokens = estimateObjectMessagesTokens(messages)
                 + (tools == null || tools.isEmpty() ? 0 : estimateToolsTokens(tools));
         UsageQuotaService.TokenReservationBundle reservation = rateLimitService.reserveLlmUsage(
                 requesterId, estimatedPromptTokens, Math.max(maxCompletionTokens, 1));
         ReActStreamAccumulator accumulator = new ReActStreamAccumulator(reservation, estimatedPromptTokens);
+        AtomicReference<ModelProviderConfigService.ActiveProviderView> usedProvider = new AtomicReference<>(chain.get(0));
 
         try {
-            Disposable subscription = buildClient(provider)
-                    .post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(request)
-                    .retrieve()
-                    .bodyToFlux(String.class)
+            Disposable subscription = withFailover(chain, 0, ModelCallPriority.ONLINE, streamTimeout(),
+                    new AtomicBoolean(false), usedProvider,
+                    provider -> streamChatCompletions(provider, request))
                     .subscribe(
                             chunk -> processReActStreamChunk(chunk, accumulator, onChunk),
                             error -> {
@@ -253,8 +277,8 @@ public class LlmProviderRouter {
                                 settleReActStreamUsage(accumulator);
                                 ReActTurn turn = accumulator.toTurn();
                                 logger.info("ReAct 流式回合完成: provider={}, model={}, finishReason={}, toolCalls={}, contentChars={}",
-                                        provider.provider(),
-                                        provider.model(),
+                                        usedProvider.get().provider(),
+                                        usedProvider.get().model(),
                                         turn.finishReason(),
                                         turn.toolCalls().size(),
                                         turn.content().length());
@@ -268,13 +292,71 @@ public class LlmProviderRouter {
         }
     }
 
-    private WebClient buildClient(ModelProviderConfigService.ActiveProviderView provider) {
-        WebClient.Builder builder = WebClient.builder()
-                .baseUrl(ModelProviderConfigService.normalizeOpenAiCompatibleBaseUrl(provider.apiBaseUrl()));
-        if (provider.apiKey() != null && !provider.apiKey().isBlank()) {
-            builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + provider.apiKey());
+    /**
+     * 激活供应商在前、备用供应商在后；关闭切换时只有激活供应商
+     */
+    private List<ModelProviderConfigService.ActiveProviderView> providerChain() {
+        ModelCallProperties.Failover failover = modelCallProperties.getFailover();
+        if (!failover.isLlmEnabled()) {
+            return List.of(modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_LLM));
         }
-        return builder.build();
+        return modelProviderConfigService.getLlmFailoverChain(failover.getLlmBackupProviders());
+    }
+
+    /**
+     * 按调用链依次尝试：当前供应商熔断打开、舱壁已满、限流排队超时或重试耗尽，且还没有收到任何内容时，切到下一个供应商。
+     * 已经开始输出后失败直接把错误交给调用方，避免同一回答拼接两个模型的内容
+     */
+    private <T> Flux<T> withFailover(List<ModelProviderConfigService.ActiveProviderView> chain,
+                                     int index,
+                                     ModelCallPriority priority,
+                                     Duration attemptTimeout,
+                                     AtomicBoolean contentReceived,
+                                     AtomicReference<ModelProviderConfigService.ActiveProviderView> usedProvider,
+                                     Function<ModelProviderConfigService.ActiveProviderView, Flux<T>> call) {
+        ModelProviderConfigService.ActiveProviderView provider = chain.get(index);
+        Flux<T> guarded = modelCallGuard.guardFlux(ModelProviderConfigService.SCOPE_LLM, provider.provider(), priority,
+                attemptTimeout,
+                () -> {
+                    usedProvider.set(provider);
+                    return call.apply(provider);
+                },
+                contentReceived);
+        if (index + 1 >= chain.size()) {
+            return guarded;
+        }
+        return guarded.onErrorResume(error -> !contentReceived.get(), error -> {
+            ModelProviderConfigService.ActiveProviderView next = chain.get(index + 1);
+            logger.warn("LLM 供应商调用失败，切换到备用供应商: from={}, to={}, error={}",
+                    provider.provider(), next.provider(), error.toString());
+            return withFailover(chain, index + 1, priority, attemptTimeout, contentReceived, usedProvider, call);
+        });
+    }
+
+    private Flux<String> streamChatCompletions(ModelProviderConfigService.ActiveProviderView provider, Map<String, Object> request) {
+        return webClientFactory.clientFor(ModelProviderConfigService.SCOPE_LLM, provider)
+                .post()
+                .uri("/chat/completions")
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(withModel(request, provider))
+                .retrieve()
+                .bodyToFlux(String.class);
+    }
+
+    /**
+     * 请求体按实际调用的供应商替换模型名，切到备用供应商时用它自己的模型
+     */
+    private Map<String, Object> withModel(Map<String, Object> request, ModelProviderConfigService.ActiveProviderView provider) {
+        if (provider.model() == null || provider.model().equals(request.get("model"))) {
+            return request;
+        }
+        Map<String, Object> copy = new LinkedHashMap<>(request);
+        copy.put("model", provider.model());
+        return copy;
+    }
+
+    private Duration streamTimeout() {
+        return Duration.ofSeconds(Math.max(modelCallProperties.getTimeout().getLlmStreamSeconds(), 1L));
     }
 
     private void logProviderError(String message, Throwable error) {

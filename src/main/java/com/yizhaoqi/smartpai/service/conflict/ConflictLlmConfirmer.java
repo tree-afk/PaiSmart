@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.service.conflict;
 
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.DocumentConflictProperties;
@@ -58,7 +59,7 @@ public class ConflictLlmConfirmer {
                     Map.of("role", "system", "content", SYSTEM_PROMPT),
                     Map.of("role", "user", "content", objectMapper.writeValueAsString(toItems(candidates, cfg.getMaxChunkChars()))));
             LlmProviderRouter.ReActTurn turn = llmProviderRouter.completeReActTurn(
-                    cfg.getRequesterId(), messages, List.of(), cfg.getMaxCompletionTokens());
+                    cfg.getRequesterId(), messages, List.of(), cfg.getMaxCompletionTokens(), ModelCallPriority.BACKGROUND);
             return applyVerdicts(candidates, parseVerdicts(turn.content()));
         } catch (Exception e) {
             logger.warn("冲突 LLM 二次确认失败，保留规则结果: candidates={}, error={}", candidates.size(), e.getMessage());

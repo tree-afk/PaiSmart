@@ -15,7 +15,12 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "file_upload",
-        uniqueConstraints = @UniqueConstraint(name = "uk_file_upload_md5_user", columnNames = {"file_md5", "user_id"})
+        uniqueConstraints = @UniqueConstraint(name = "uk_file_upload_md5_user", columnNames = {"file_md5", "user_id"}),
+        // 定时任务按状态 + 心跳扫描卡住和废弃的记录
+        indexes = {
+                @Index(name = "idx_vectorization_heartbeat", columnList = "vectorization_status,heartbeat_at"),
+                @Index(name = "idx_status_heartbeat", columnList = "status,heartbeat_at")
+        }
 )
 public class FileUpload {
     public static final int STATUS_UPLOADING = 0;
@@ -93,6 +98,26 @@ public class FileUpload {
 
     @Column(name = "vectorization_error_message", length = 1000)
     private String vectorizationErrorMessage;
+
+    /**
+     * 本轮向量化被消费者认领的时间，同时作为认领凭证：心跳和完成都要带上它做条件更新，
+     * 被恢复任务改回待处理后，旧消费者的心跳会失败并主动放弃
+     */
+    @Column(name = "processing_started_at")
+    private LocalDateTime processingStartedAt;
+
+    /**
+     * 当前阶段最近一次有进展的时间：上传中是最后一个分片到达，合并中是开始合并，向量化中是最后一批分块完成。
+     * 定时任务按它判断上传是否被放弃、合并或向量化是否卡住
+     */
+    @Column(name = "heartbeat_at")
+    private LocalDateTime heartbeatAt;
+
+    /**
+     * 卡住后被定时任务重新投递的次数，超过上限标记失败
+     */
+    @Column(name = "retry_count", nullable = false, columnDefinition = "INT DEFAULT 0")
+    private int retryCount = 0;
 
     /**
      * 文件上传的创建时间

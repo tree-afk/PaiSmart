@@ -4,8 +4,12 @@ import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
+import com.yizhaoqi.smartpai.service.UploadService;
 import com.yizhaoqi.smartpai.service.VectorizationService;
 import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
+import com.yizhaoqi.smartpai.service.reliability.VectorizationLease;
+import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseLostException;
+import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseService;
 import io.minio.errors.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +22,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
+import java.util.Optional;
 
 @Service
 @Slf4j
@@ -26,6 +31,8 @@ public class FileProcessingConsumer {
     private final ParseService parseService;
     private final VectorizationService vectorizationService;
     private final DocumentService documentService;
+    private final VectorizationLeaseService leaseService;
+    private final UploadService uploadService;
     @Autowired
     private KafkaConfig kafkaConfig;
     @Autowired(required = false)
@@ -35,11 +42,15 @@ public class FileProcessingConsumer {
     public FileProcessingConsumer(
             ParseService parseService,
             VectorizationService vectorizationService,
-            DocumentService documentService
+            DocumentService documentService,
+            VectorizationLeaseService leaseService,
+            UploadService uploadService
     ) {
         this.parseService = parseService;
         this.vectorizationService = vectorizationService;
         this.documentService = documentService;
+        this.leaseService = leaseService;
+        this.uploadService = uploadService;
     }
 
     // id 供 FileProcessingListenerGate 在堆内存背压 / 索引切换时暂停、恢复消费
@@ -51,57 +62,45 @@ public class FileProcessingConsumer {
         log.info("文件权限信息: userId={}, orgTag={}, isPublic={}", 
                 task.getUserId(), task.getOrgTag(), task.isPublic());
 
-        documentService.markVectorizationProcessing(task.getFileMd5(), false);
-
-        if (FileProcessingTask.TASK_TYPE_REINDEX.equals(task.getTaskType())) {
-            processReindexTask(task);
+        // 认领：上传任务已完成直接跳过（Kafka 重复投递），已有消费者在处理且心跳未超时也跳过
+        Optional<VectorizationLease> claimed = leaseService.claim(task);
+        if (claimed.isEmpty()) {
             return;
         }
+        VectorizationLease lease = claimed.get();
 
-        InputStream fileStream = null;
-        try {
-            // 下载文件
-            fileStream = downloadFileFromStorage(task.getFilePath());
-            // 在 downloadFileFromStorage 返回后立即检查流是否可读
-            if (fileStream == null) {
-                throw new IOException("流为空");
-            }
+        try (InputStream fileStream = openSourceStream(task)) {
+            // 先清理上一次处理留下的分块和索引，重复投递、中途失败重试都从干净状态重新解析，不会插入重复分块
+            documentService.clearIndexedData(task.getFileMd5());
 
-            // 强制转换为可缓存流
-            if (!fileStream.markSupported()) {
-                fileStream = new BufferedInputStream(fileStream);
-            }
-
-            // 解析文件
-            parseService.parseAndSave(task.getFileMd5(), fileStream, 
+            parseService.parseAndSave(task.getFileMd5(), fileStream,
                     task.getUserId(), task.getOrgTag(), task.isPublic());
             log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
+            leaseService.heartbeat(lease);
 
-            // 向量化处理
+            String requesterId = task.getRequesterId() == null || task.getRequesterId().isBlank()
+                    ? task.getUserId()
+                    : task.getRequesterId();
             VectorizationService.VectorizationUsageResult vectorizationResult = vectorizationService.vectorizeWithUsage(
                     task.getFileMd5(),
                     task.getUserId(),
                     task.getOrgTag(),
                     task.isPublic(),
-                    task.getUserId()
+                    requesterId,
+                    () -> leaseService.heartbeat(lease)
             );
-            documentService.markVectorizationCompleted(task.getFileMd5(), vectorizationResult);
-            log.info("向量化完成，fileMd5: {}", task.getFileMd5());
-            publishVectorized(task.getFileMd5());
+            if (leaseService.complete(lease, vectorizationResult)) {
+                log.info("向量化完成，fileMd5: {}", task.getFileMd5());
+                publishVectorized(task.getFileMd5());
+            }
+        } catch (VectorizationLeaseLostException e) {
+            // 任务已被定时任务改回待处理并重新投递，交给新的认领者，这条消息正常提交
+            log.warn("向量化认领已失效，放弃本次处理: fileMd5={}", task.getFileMd5());
         } catch (Exception e) {
-            documentService.markVectorizationFailed(task.getFileMd5(), e);
+            leaseService.fail(lease, e);
             log.error("Error processing task: {}", task, e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
             throw new RuntimeException("Error processing task", e);
-        } finally {
-            // 确保关闭输入流
-            if (fileStream != null) {
-                try {
-                    fileStream.close();
-                } catch (IOException e) {
-                    log.error("Error closing file stream", e);
-                }
-            }
         }
     }
 
@@ -119,17 +118,24 @@ public class FileProcessingConsumer {
         }
     }
 
-    private void processReindexTask(FileProcessingTask task) {
+    /**
+     * 优先直接读 MinIO 里的合并文件：预签名 URL 一小时就过期，outbox 补发、卡住重投、重建任务都可能晚于这个时间。
+     * 合并对象读不到时再退回消息里的路径（兼容旧消息和本地文件路径）
+     */
+    private InputStream openSourceStream(FileProcessingTask task) throws Exception {
         try {
-            String requesterId = task.getRequesterId() == null || task.getRequesterId().isBlank()
-                    ? task.getUserId()
-                    : task.getRequesterId();
-            documentService.reindexDocument(task.getFileMd5(), requesterId);
+            return uploadService.getMergedFileStream(task.getFileMd5());
         } catch (Exception e) {
-            documentService.markVectorizationFailed(task.getFileMd5(), e);
-            log.error("Error reindexing task: {}", task, e);
-            throw new RuntimeException("Error reindexing task", e);
+            if (task.getFilePath() == null || task.getFilePath().isBlank()) {
+                throw e;
+            }
+            log.warn("读取 MinIO 合并文件失败，改用消息中的文件路径: fileMd5={}, error={}", task.getFileMd5(), e.getMessage());
         }
+        InputStream fileStream = downloadFileFromStorage(task.getFilePath());
+        if (fileStream == null) {
+            throw new IOException("流为空");
+        }
+        return fileStream.markSupported() ? fileStream : new BufferedInputStream(fileStream);
     }
 
     /**

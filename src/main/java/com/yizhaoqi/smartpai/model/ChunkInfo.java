@@ -12,7 +12,7 @@ import lombok.Data;
 @Entity
 @Table(
         name = "chunk_info",
-        uniqueConstraints = @UniqueConstraint(name = "uk_file_md5_chunk_index", columnNames = {"file_md5", "chunk_index"})
+        uniqueConstraints = @UniqueConstraint(name = "uk_chunk_user_md5_index", columnNames = {"user_id", "file_md5", "chunk_index"})
 )
 public class ChunkInfo {
     /**
@@ -29,6 +29,13 @@ public class ChunkInfo {
      */
     @Column(name = "file_md5", nullable = false, length = 32)
     private String fileMd5;
+
+    /**
+     * 上传分片的用户ID
+     * 分片按用户隔离：两个用户同时上传同一个文件时，各自的分片记录和对象互不影响
+     */
+    @Column(name = "user_id", nullable = false, length = 64)
+    private String userId;
 
     /**
      * 分块的索引号

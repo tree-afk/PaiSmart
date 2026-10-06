@@ -12,7 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
-import org.springframework.kafka.core.KafkaTemplate;
+import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -31,7 +31,7 @@ class UploadControllerTest {
     private UploadService uploadService;
 
     @Mock
-    private KafkaTemplate<String, Object> kafkaTemplate;
+    private FileProcessingOutboxService fileProcessingOutboxService;
 
     @Mock
     private KafkaConfig kafkaConfig;
@@ -53,12 +53,13 @@ class UploadControllerTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        uploadController = new UploadController(uploadService, kafkaTemplate);
+        uploadController = new UploadController(uploadService);
         ReflectionTestUtils.setField(uploadController, "kafkaConfig", kafkaConfig);
         ReflectionTestUtils.setField(uploadController, "userService", userService);
         ReflectionTestUtils.setField(uploadController, "fileUploadRepository", fileUploadRepository);
         ReflectionTestUtils.setField(uploadController, "fileTypeValidationService", fileTypeValidationService);
         ReflectionTestUtils.setField(uploadController, "parseService", parseService);
+        ReflectionTestUtils.setField(uploadController, "fileProcessingOutboxService", fileProcessingOutboxService);
         when(fileTypeValidationService.getSupportedFileTypes()).thenReturn(Set.of("pdf"));
     }
 
@@ -164,7 +165,7 @@ class UploadControllerTest {
         assertEquals("文件已完成合并", response.getBody().get("message"));
         assertEquals("https://example.com/merged/md5", ((Map<?, ?>) response.getBody().get("data")).get("object_url"));
         verify(uploadService, never()).mergeChunks(anyString(), anyString(), anyString());
-        verify(kafkaTemplate, never()).executeInTransaction(any());
+        verify(fileProcessingOutboxService, never()).enqueueVectorization(any(), any(), anyBoolean());
     }
     @Test
     void uploadRejectsUnassignedOrganizationBeforeWritingAnyChunk() throws Exception {

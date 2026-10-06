@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.service.eval;
 
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.RagEvalProperties;
 import com.yizhaoqi.smartpai.entity.SearchResult;
@@ -146,7 +147,7 @@ public class RagEvalCaseRunner {
         List<Map<String, Object>> messages = llmProviderRouter.buildRagMessages(question, context);
         LlmProviderRouter.ReActTurn turn = callWithTimeout(
                 () -> llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
-                        properties.getGenerationMaxTokens()),
+                        properties.getGenerationMaxTokens(), ModelCallPriority.BACKGROUND),
                 properties.getGenerationTimeoutSeconds());
         if (turn == null || turn.content() == null || turn.content().isBlank()) {
             throw new IllegalStateException("模型返回空回答");
@@ -166,7 +167,7 @@ public class RagEvalCaseRunner {
                     Map.of("role", "user", "content", objectMapper.writeValueAsString(payload)));
             LlmProviderRouter.ReActTurn turn = callWithTimeout(
                     () -> llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
-                            properties.getJudgeMaxTokens()),
+                            properties.getJudgeMaxTokens(), ModelCallPriority.BACKGROUND),
                     properties.getJudgeTimeoutSeconds());
             return JudgeOutputParser.parse(turn == null ? null : turn.content(), objectMapper);
         } catch (Exception e) {

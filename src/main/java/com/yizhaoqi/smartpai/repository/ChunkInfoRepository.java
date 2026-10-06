@@ -9,11 +9,17 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
+/**
+ * 分片记录按 (userId, fileMd5) 隔离，两个用户同时上传同一个文件时互不影响
+ */
 public interface ChunkInfoRepository extends JpaRepository<ChunkInfo, Long> {
-    List<ChunkInfo> findByFileMd5OrderByChunkIndexAsc(String fileMd5);
+    List<ChunkInfo> findByFileMd5AndUserIdOrderByChunkIndexAsc(String fileMd5, String userId);
 
-    boolean existsByFileMd5AndChunkIndex(String fileMd5, int chunkIndex);
+    boolean existsByFileMd5AndUserIdAndChunkIndex(String fileMd5, String userId, int chunkIndex);
 
+    /**
+     * 删除文件所有用户的分片记录，仅用于整份文档删除
+     */
     @Transactional
     @Modifying
     @Query("delete from ChunkInfo c where c.fileMd5 = :fileMd5")
@@ -21,9 +27,16 @@ public interface ChunkInfoRepository extends JpaRepository<ChunkInfo, Long> {
 
     @Transactional
     @Modifying
-    @Query("delete from ChunkInfo c where c.fileMd5 = :fileMd5 and c.chunkIndex = :chunkIndex")
-    int deleteByFileMd5AndChunkIndex(@Param("fileMd5") String fileMd5, @Param("chunkIndex") int chunkIndex);
+    @Query("delete from ChunkInfo c where c.fileMd5 = :fileMd5 and c.userId = :userId")
+    int deleteByFileMd5AndUserId(@Param("fileMd5") String fileMd5, @Param("userId") String userId);
 
-    @Query("select c.chunkIndex from ChunkInfo c where c.fileMd5 = :fileMd5 order by c.chunkIndex asc")
-    List<Integer> findChunkIndexesByFileMd5(@Param("fileMd5") String fileMd5);
+    @Transactional
+    @Modifying
+    @Query("delete from ChunkInfo c where c.fileMd5 = :fileMd5 and c.userId = :userId and c.chunkIndex = :chunkIndex")
+    int deleteByFileMd5AndUserIdAndChunkIndex(@Param("fileMd5") String fileMd5,
+                                              @Param("userId") String userId,
+                                              @Param("chunkIndex") int chunkIndex);
+
+    @Query("select c.chunkIndex from ChunkInfo c where c.fileMd5 = :fileMd5 and c.userId = :userId order by c.chunkIndex asc")
+    List<Integer> findChunkIndexesByFileMd5AndUserId(@Param("fileMd5") String fileMd5, @Param("userId") String userId);
 }

@@ -10,15 +10,17 @@ import com.yizhaoqi.smartpai.service.FileTypeValidationService;
 import com.yizhaoqi.smartpai.service.ParseService;
 import com.yizhaoqi.smartpai.service.UploadService;
 import com.yizhaoqi.smartpai.service.UserService;
+import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
 import com.yizhaoqi.smartpai.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,9 +37,6 @@ public class UploadController {
     private UploadService uploadService;
 
     @Autowired
-    private KafkaTemplate<String, Object> kafkaTemplate;
-
-    @Autowired
     private KafkaConfig kafkaConfig;
 
     @Autowired
@@ -52,9 +51,11 @@ public class UploadController {
     @Autowired
     private ParseService parseService;
 
-    public UploadController(UploadService uploadService, KafkaTemplate<String, Object> kafkaTemplate) {
+    @Autowired
+    private FileProcessingOutboxService fileProcessingOutboxService;
+
+    public UploadController(UploadService uploadService) {
         this.uploadService = uploadService;
-        this.kafkaTemplate = kafkaTemplate;
     }
 
     /**
@@ -322,7 +323,8 @@ public class UploadController {
             int updatedRows = fileUploadRepository.updateStatusIfCurrent(
                     fileUpload.getId(),
                     FileUpload.STATUS_UPLOADING,
-                    FileUpload.STATUS_MERGING
+                    FileUpload.STATUS_MERGING,
+                    LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS)
             );
             if (updatedRows == 0) {
                 FileUpload latestFileUpload = fileUploadRepository.findFirstByFileMd5AndUserIdOrderByCreatedAtDesc(request.fileMd5(), userId)
@@ -395,19 +397,10 @@ public class UploadController {
                     userId
             );
 
-            fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_PROCESSING);
-            fileUpload.setVectorizationErrorMessage(null);
-            fileUpload.setActualEmbeddingTokens(null);
-            fileUpload.setActualChunkCount(null);
-            fileUploadRepository.save(fileUpload);
-            
-            LogUtils.logBusiness("MERGE_FILE", userId, "发送文件处理任务到Kafka(事务): topic=%s, fileMd5=%s, fileName=%s", 
-                    kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName());
-            kafkaTemplate.executeInTransaction(kt -> {
-                kt.send(kafkaConfig.getFileProcessingTopic(), task);
-                return true;
-            });
-            LogUtils.logBusiness("MERGE_FILE", userId, "文件处理任务已发送: fileMd5=%s, fileName=%s, fileType=%s", request.fileMd5(), request.fileName(), fileType);
+            // 状态改成待处理和待投递消息同一事务提交（outbox），提交后再投递 Kafka；投递失败由定时任务补发
+            fileProcessingOutboxService.enqueueVectorization(fileUpload, task, true);
+            LogUtils.logBusiness("MERGE_FILE", userId, "文件处理任务已提交: topic=%s, fileMd5=%s, fileName=%s, fileType=%s",
+                    kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName(), fileType);
 
             // 构建数据对象
             Map<String, Object> data = new HashMap<>();
@@ -420,7 +413,7 @@ public class UploadController {
             // 构建统一响应格式
             Map<String, Object> response = new HashMap<>();
             response.put("code", 200);
-            response.put("message", "文件合并成功，任务已发送到 Kafka");
+            response.put("message", "文件合并成功，任务已提交处理");
             response.put("data", data);
             
             LogUtils.logUserOperation(userId, "MERGE_FILE", request.fileMd5(), "SUCCESS");

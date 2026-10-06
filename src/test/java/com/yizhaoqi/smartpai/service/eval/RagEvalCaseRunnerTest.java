@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.service.eval;
 
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.ParentContextProperties;
@@ -51,7 +52,7 @@ class RagEvalCaseRunnerTest {
                 new ParentContextExpander(parentProperties, documentVectorRepository), properties, objectMapper, Runnable::run);
         when(router.buildRagMessages(anyString(), anyString()))
                 .thenAnswer(invocation -> List.of(Map.<String, Object>of("role", "user", "content", invocation.getArgument(0))));
-        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt())).thenAnswer(invocation -> {
+        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND))).thenAnswer(invocation -> {
             List<Map<String, Object>> messages = invocation.getArgument(1);
             llmCalls.add(messages);
             String reply = llmReplies.remove(0);

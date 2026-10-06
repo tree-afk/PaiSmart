@@ -92,4 +92,21 @@ public class AsyncExecutorConfig {
         executor.initialize();
         return executor;
     }
+
+    /**
+     * outbox 提交后立即投递 Kafka。队列满时直接丢弃，消息仍在 outbox 表里，由定时补发任务兜底
+     */
+    @Bean(name = "outboxDispatchExecutor")
+    public ThreadPoolTaskExecutor outboxDispatchExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setThreadNamePrefix("outbox-dispatch-");
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+        executor.setAwaitTerminationSeconds(10);
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.initialize();
+        return executor;
+    }
 }

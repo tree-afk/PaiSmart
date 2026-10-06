@@ -57,6 +57,11 @@ spring:
       # 启动时自动建 topic 的默认参数，本地单机通常保持 1/1
       partitions: ${SPRING_KAFKA_TOPIC_PARTITIONS:1}
       replication-factor: ${SPRING_KAFKA_TOPIC_REPLICATION_FACTOR:1}
+  task:
+    scheduling:
+      pool:
+        # outbox 补发、卡住任务恢复各占一个线程，互不阻塞
+        size: ${SPRING_TASK_SCHEDULING_POOL_SIZE:4}
   webflux:
     client:
       max-in-memory-size: 16MB
@@ -104,16 +109,57 @@ rate-limit:
   chat-message:
     max: ${RATE_LIMIT_CHAT_MESSAGE_MAX:30}
     window-seconds: ${RATE_LIMIT_CHAT_MESSAGE_WINDOW_SECONDS:60}
-  llm-request:
-    minute-max: ${RATE_LIMIT_LLM_MINUTE_MAX:20}
-    minute-window-seconds: ${RATE_LIMIT_LLM_MINUTE_WINDOW_SECONDS:60}
-    day-max: ${RATE_LIMIT_LLM_DAY_MAX:500}
-    day-window-seconds: ${RATE_LIMIT_LLM_DAY_WINDOW_SECONDS:86400}
-  embedding-batch:
-    minute-max: ${RATE_LIMIT_EMBEDDING_MINUTE_MAX:60}
-    minute-window-seconds: ${RATE_LIMIT_EMBEDDING_MINUTE_WINDOW_SECONDS:60}
-    day-max: ${RATE_LIMIT_EMBEDDING_DAY_MAX:2000}
-    day-window-seconds: ${RATE_LIMIT_EMBEDDING_DAY_WINDOW_SECONDS:86400}
+  # 模型调用按供应商的 QPS 令牌桶（Redis Lua，多实例共享）。超出时进有界等待队列，等到截止时间仍拿不到就拒绝；
+  # 后台任务（上传向量化、上下文生成、评测）只能用预留余量以外的令牌，在线问答优先
+  model-qps:
+    enabled: ${RATE_LIMIT_MODEL_QPS_ENABLED:true}
+    llm-qps: ${RATE_LIMIT_MODEL_QPS_LLM:20}
+    embedding-qps: ${RATE_LIMIT_MODEL_QPS_EMBEDDING:20}
+    online-reserve-ratio: ${RATE_LIMIT_MODEL_QPS_ONLINE_RESERVE_RATIO:0.3}
+    online-max-waiters: ${RATE_LIMIT_MODEL_QPS_ONLINE_MAX_WAITERS:200}
+    background-max-waiters: ${RATE_LIMIT_MODEL_QPS_BACKGROUND_MAX_WAITERS:50}
+    online-max-wait-ms: ${RATE_LIMIT_MODEL_QPS_ONLINE_MAX_WAIT_MS:5000}
+    background-max-wait-ms: ${RATE_LIMIT_MODEL_QPS_BACKGROUND_MAX_WAIT_MS:60000}
+
+# 模型调用的连接池、超时、重试、熔断、舱壁和供应商切换（按供应商隔离）
+model-call:
+  http:
+    connect-timeout-ms: ${MODEL_CALL_CONNECT_TIMEOUT_MS:5000}
+    # 两次网络读之间的最大间隔，流式输出 token 之间的停顿也受它约束
+    read-timeout-seconds: ${MODEL_CALL_READ_TIMEOUT_SECONDS:60}
+    max-connections: ${MODEL_CALL_MAX_CONNECTIONS:100}
+    pending-acquire-timeout-seconds: ${MODEL_CALL_PENDING_ACQUIRE_TIMEOUT_SECONDS:10}
+    max-idle-seconds: ${MODEL_CALL_MAX_IDLE_SECONDS:30}
+  timeout:
+    llm-stream-seconds: ${MODEL_CALL_LLM_STREAM_TIMEOUT_SECONDS:180}
+    llm-blocking-seconds: ${MODEL_CALL_LLM_BLOCKING_TIMEOUT_SECONDS:90}
+    embedding-seconds: ${MODEL_CALL_EMBEDDING_TIMEOUT_SECONDS:30}
+  retry:
+    # 重试只放在客户端这一层：指数退避 + 抖动，遵守 Retry-After，已输出内容后不重试
+    max-retries: ${MODEL_CALL_MAX_RETRIES:2}
+    initial-backoff-ms: ${MODEL_CALL_INITIAL_BACKOFF_MS:500}
+    max-backoff-ms: ${MODEL_CALL_MAX_BACKOFF_MS:8000}
+    max-retry-after-seconds: ${MODEL_CALL_MAX_RETRY_AFTER_SECONDS:30}
+    # 重试预算：窗口内重试占请求数超过该比例后停止重试
+    budget-ratio: ${MODEL_CALL_RETRY_BUDGET_RATIO:0.1}
+    budget-min-retries: ${MODEL_CALL_RETRY_BUDGET_MIN_RETRIES:3}
+    budget-window-seconds: ${MODEL_CALL_RETRY_BUDGET_WINDOW_SECONDS:10}
+  circuit-breaker:
+    failure-rate-threshold: ${MODEL_CALL_CB_FAILURE_RATE_THRESHOLD:50}
+    slow-call-duration-seconds: ${MODEL_CALL_CB_SLOW_CALL_SECONDS:120}
+    slow-call-rate-threshold: ${MODEL_CALL_CB_SLOW_CALL_RATE_THRESHOLD:80}
+    sliding-window-size: ${MODEL_CALL_CB_SLIDING_WINDOW_SIZE:20}
+    minimum-number-of-calls: ${MODEL_CALL_CB_MINIMUM_CALLS:10}
+    wait-duration-in-open-seconds: ${MODEL_CALL_CB_OPEN_SECONDS:30}
+    permitted-calls-in-half-open: ${MODEL_CALL_CB_HALF_OPEN_CALLS:3}
+  bulkhead:
+    llm-max-concurrent-calls: ${MODEL_CALL_LLM_MAX_CONCURRENT:50}
+    embedding-max-concurrent-calls: ${MODEL_CALL_EMBEDDING_MAX_CONCURRENT:20}
+  failover:
+    # 主供应商熔断或失败（尚未输出内容）时切到备用 LLM 供应商；embedding 不切换
+    llm-enabled: ${MODEL_CALL_LLM_FAILOVER_ENABLED:true}
+    # 备用顺序（provider 编码，逗号分隔），为空时使用其余已启用且配置了 API Key 的供应商
+    llm-backup-providers: ${MODEL_CALL_LLM_BACKUP_PROVIDERS:}
 
 usage-quota:
   # true 表示使用token总量消费机制； false 表示使用每日 token 重置的策略，默认是每日重置可用token的策略，沿用之前的逻辑
@@ -131,6 +177,21 @@ usage-quota:
     admin-init-tokens: ${USAGE_QUOTA_EMBEDDING_ADMIN_INIT_TOKENS:100000} # 管理员初始 Embedding Token
 
 file:
+  processing:
+    reliability:
+      # 卡住任务恢复、废弃上传清理（定时任务，多实例靠条件更新互斥）
+      recovery-enabled: ${FILE_PROCESSING_RECOVERY_ENABLED:true}
+      recovery-interval-ms: ${FILE_PROCESSING_RECOVERY_INTERVAL_MS:60000}
+      vectorization-heartbeat-timeout-seconds: ${FILE_PROCESSING_HEARTBEAT_TIMEOUT_SECONDS:600}
+      merge-timeout-seconds: ${FILE_PROCESSING_MERGE_TIMEOUT_SECONDS:600}
+      max-retries: ${FILE_PROCESSING_MAX_RETRIES:3}
+      abandoned-upload-hours: ${FILE_PROCESSING_ABANDONED_UPLOAD_HOURS:24}
+      chunk-bitmap-ttl-hours: ${FILE_PROCESSING_CHUNK_BITMAP_TTL_HOURS:48}
+      outbox:
+        # 状态和待投递消息同一事务提交，Kafka 投递失败按指数退避补发
+        dispatcher-enabled: ${FILE_PROCESSING_OUTBOX_DISPATCHER_ENABLED:true}
+        dispatch-interval-ms: ${FILE_PROCESSING_OUTBOX_DISPATCH_INTERVAL_MS:5000}
+        max-backoff-seconds: ${FILE_PROCESSING_OUTBOX_MAX_BACKOFF_SECONDS:300}
   parsing:
     chunk-size: 512
     overlap-size: 100

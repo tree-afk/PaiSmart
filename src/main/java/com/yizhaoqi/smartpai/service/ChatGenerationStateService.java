@@ -2,6 +2,7 @@ package com.yizhaoqi.smartpai.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -19,6 +20,8 @@ public class ChatGenerationStateService {
 
     private static final Logger logger = LoggerFactory.getLogger(ChatGenerationStateService.class);
     private static final Duration GENERATION_TTL = Duration.ofMinutes(30);
+    /** 请求幂等键的有效期：只用来合并短时间内的重复点击，生成结束后立即释放 */
+    private static final Duration REQUEST_DEDUP_TTL = Duration.ofMinutes(2);
     private static final TypeReference<Map<String, Map<String, Object>>> REFERENCE_MAP_TYPE =
             new TypeReference<Map<String, Map<String, Object>>>() {};
 
@@ -31,7 +34,10 @@ public class ChatGenerationStateService {
     }
 
     public GenerationSnapshot createGeneration(String userId, String conversationId, String question) {
-        String generationId = UUID.randomUUID().toString();
+        return createGeneration(UUID.randomUUID().toString(), userId, conversationId, question);
+    }
+
+    public GenerationSnapshot createGeneration(String generationId, String userId, String conversationId, String question) {
         String now = LocalDateTime.now().toString();
         GenerationMeta meta = new GenerationMeta(generationId, userId, conversationId, question, GenerationStatus.STREAMING, now, now, null);
 
@@ -41,6 +47,39 @@ public class ChatGenerationStateService {
         writeMeta(meta);
         redisTemplate.opsForValue().set(activeGenerationKey(userId), generationId, GENERATION_TTL);
         return toSnapshot(meta, "", Collections.emptyMap());
+    }
+
+    /**
+     * 按 (用户, 会话, 问题) 生成请求幂等键并尝试占用。
+     *
+     * @return null 表示占用成功，调用方用 generationId 发起新的生成；否则返回正在进行中的同一请求的 generationId，调用方应复用它
+     */
+    public String claimRequest(String userId, String conversationId, String question, String generationId) {
+        String key = requestKey(userId, conversationId, question);
+        if (Boolean.TRUE.equals(redisTemplate.opsForValue().setIfAbsent(key, generationId, REQUEST_DEDUP_TTL))) {
+            return null;
+        }
+        String existing = redisTemplate.opsForValue().get(key);
+        if (existing != null && !existing.isBlank()) {
+            GenerationMeta meta = readMeta(existing);
+            // meta 还没写入说明前一个请求刚占到键、正在创建生成任务，同样按重复请求处理
+            if (meta == null || (meta.status() == GenerationStatus.STREAMING && userId.equals(meta.userId()))) {
+                return existing;
+            }
+        }
+        // 前一个请求已经结束，这次是用户重新提问
+        redisTemplate.opsForValue().set(key, generationId, REQUEST_DEDUP_TTL);
+        return null;
+    }
+
+    /**
+     * 生成任务没能启动（如被限流）时释放幂等键，只释放自己占用的
+     */
+    public void releaseRequest(String userId, String conversationId, String question, String generationId) {
+        String key = requestKey(userId, conversationId, question);
+        if (generationId.equals(redisTemplate.opsForValue().get(key))) {
+            redisTemplate.delete(key);
+        }
     }
 
     public void appendChunk(String generationId, String chunk) {
@@ -133,6 +172,7 @@ public class ChatGenerationStateService {
         );
         writeMeta(updated);
         clearActiveGeneration(meta.userId(), generationId);
+        releaseRequest(meta.userId(), meta.conversationId(), meta.question(), generationId);
     }
 
     private void touch(String generationId) {
@@ -227,6 +267,12 @@ public class ChatGenerationStateService {
 
     private String referenceKey(String generationId) {
         return "chat:generation:" + generationId + ":refs";
+    }
+
+    private String requestKey(String userId, String conversationId, String question) {
+        String normalizedQuestion = question == null ? "" : question.strip();
+        String digest = DigestUtils.sha256Hex(conversationId + "\n" + normalizedQuestion);
+        return "chat:request:" + userId + ":" + digest;
     }
 
     private String activeGenerationKey(String userId) {

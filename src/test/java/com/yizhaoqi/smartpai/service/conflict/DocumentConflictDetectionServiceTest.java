@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.service.conflict;
 
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.DocumentConflictProperties;
 import com.yizhaoqi.smartpai.service.LlmProviderRouter;
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -60,14 +62,14 @@ class DocumentConflictDetectionServiceTest {
         service(Runnable::run).onDocumentVectorized(new DocumentVectorizedEvent("md5"));
 
         verify(conflictService).recordCandidates(candidates);
-        verify(router, never()).completeReActTurn(anyString(), anyList(), anyList(), anyInt());
+        verify(router, never()).completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND));
     }
 
     @Test
     void llmConfirmDropsRejectedCandidatesAndKeepsUnansweredOnes() throws Exception {
         properties.getLlmConfirm().setEnabled(true);
         List<ConflictCandidate> candidates = List.of(candidate(), candidate(), candidate());
-        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt())).thenReturn(turn("""
+        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND))).thenReturn(turn("""
                 ```json
                 [{"id": 1, "conflict": true, "reason": "同一端口取值不同"}, {"id": 2, "conflict": false, "reason": "不同服务"}]
                 ```"""));
@@ -83,7 +85,7 @@ class DocumentConflictDetectionServiceTest {
     void llmConfirmFailureKeepsRuleResults() {
         properties.getLlmConfirm().setEnabled(true);
         List<ConflictCandidate> candidates = List.of(candidate());
-        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt())).thenReturn(turn("我认为这不是冲突"));
+        when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND))).thenReturn(turn("我认为这不是冲突"));
 
         assertSame(candidates, confirmer.confirm(candidates));
     }

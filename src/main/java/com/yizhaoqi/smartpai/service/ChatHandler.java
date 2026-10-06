@@ -110,9 +110,8 @@ public class ChatHandler {
         logger.info("开始处理消息，用户ID: {}, 会话ID: {}", userId, session.getId());
         String conversationId = null;
         String generationId = null;
+        String claimedGenerationId = null;
         try {
-            rateLimitService.checkChatByUser(userId);
-
             // 1. 获取或创建会话 ID
             if (requestedConversationId != null && !requestedConversationId.isBlank()) {
                 conversationService.validateConversationOwner(Long.parseLong(userId), requestedConversationId);
@@ -120,9 +119,21 @@ public class ChatHandler {
             } else {
                 conversationId = getOrCreateConversationId(userId);
             }
+
+            // 请求幂等：同一用户在同一会话里重复提交同一个问题（重复点击、断线重发），复用进行中的生成，不再调用一次模型，也不占限流额度
+            String candidateGenerationId = UUID.randomUUID().toString();
+            String inFlightGenerationId = chatGenerationStateService.claimRequest(
+                    userId, conversationId, userMessage, candidateGenerationId);
+            if (inFlightGenerationId != null) {
+                attachToInFlightGeneration(userId, inFlightGenerationId, conversationId, session);
+                return;
+            }
+            claimedGenerationId = candidateGenerationId;
+
+            rateLimitService.checkChatByUser(userId);
             conversationService.ensureConversationSession(Long.parseLong(userId), conversationId, userMessage);
             ChatGenerationStateService.GenerationSnapshot generation =
-                    chatGenerationStateService.createGeneration(userId, conversationId, userMessage);
+                    chatGenerationStateService.createGeneration(candidateGenerationId, userId, conversationId, userMessage);
             generationId = generation.generationId();
             chatSessionRegistry.bindGeneration(userId, generationId, session);
             final String finalConversationId = conversationId;
@@ -154,11 +165,13 @@ public class ChatHandler {
             }
 
         } catch (RateLimitExceededException e) {
+            releaseUnstartedRequest(userId, conversationId, userMessage, claimedGenerationId, generationId);
             chatSessionRegistry.sendJsonToSession(session, Map.of(
                     "type", "error", "code", 429, "message", e.getMessage(),
                     "retryAfterSeconds", e.getRetryAfterSeconds()));
         } catch (Exception e) {
             logger.error("处理消息错误: {}", e.getMessage(), e);
+            releaseUnstartedRequest(userId, conversationId, userMessage, claimedGenerationId, generationId);
             if (generationId != null) {
                 chatGenerationStateService.markFailed(generationId, e.getMessage());
             }
@@ -167,6 +180,40 @@ public class ChatHandler {
             if (generationId != null) {
                 cleanupGenerationState(generationId, e);
             }
+        }
+    }
+
+    /**
+     * 把当前连接挂到进行中的生成上，后续增量照常推送；start 里带上已经生成的内容，前端据此补齐
+     */
+    private void attachToInFlightGeneration(String userId, String generationId, String conversationId, WebSocketSession session) {
+        logger.info("重复提交同一问题，复用进行中的生成: userId={}, generationId={}", userId, generationId);
+        chatSessionRegistry.resumeGeneration(userId, generationId, session);
+        String content = chatGenerationStateService.getGenerationForUser(generationId, userId)
+                .map(ChatGenerationStateService.GenerationSnapshot::content)
+                .orElse("");
+        chatSessionRegistry.sendJsonToSession(session, Map.of(
+                "type", "start",
+                "generationId", generationId,
+                "conversationId", conversationId,
+                "timestamp", System.currentTimeMillis(),
+                "resumed", true,
+                "content", content
+        ));
+    }
+
+    /**
+     * 生成任务还没创建就失败（限流、会话校验失败等）时释放幂等键，用户可以立即重试
+     */
+    private void releaseUnstartedRequest(String userId, String conversationId, String userMessage,
+                                         String claimedGenerationId, String generationId) {
+        if (claimedGenerationId == null || generationId != null) {
+            return;
+        }
+        try {
+            chatGenerationStateService.releaseRequest(userId, conversationId, userMessage, claimedGenerationId);
+        } catch (Exception e) {
+            logger.warn("释放请求幂等键失败，等待过期: userId={}, error={}", userId, e.getMessage());
         }
     }
 

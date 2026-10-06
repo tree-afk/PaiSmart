@@ -11,16 +11,20 @@ import java.sql.Blob;
  */
 @Data
 @Entity
-@Table(name = "document_vectors")
+@Table(
+        name = "document_vectors",
+        // 同一文件的同一分块只能有一行：Kafka 重复投递时即使清理遗漏，也会在插入时失败而不是悄悄重复
+        uniqueConstraints = @UniqueConstraint(name = "uk_document_vectors_md5_chunk", columnNames = {"file_md5", "chunk_id"})
+)
 public class DocumentVector {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long vectorId;
 
-    @Column(nullable = false, length = 32)
+    @Column(name = "file_md5", nullable = false, length = 32)
     private String fileMd5;
 
-    @Column(nullable = false)
+    @Column(name = "chunk_id", nullable = false)
     private Integer chunkId;
 
     @Lob

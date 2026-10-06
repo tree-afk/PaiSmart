@@ -2,18 +2,18 @@ package com.yizhaoqi.smartpai.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yizhaoqi.smartpai.client.resilience.ModelCallGuard;
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
+import com.yizhaoqi.smartpai.client.resilience.ModelWebClientFactory;
+import com.yizhaoqi.smartpai.config.ModelCallProperties;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
 import com.yizhaoqi.smartpai.service.RateLimitService;
 import com.yizhaoqi.smartpai.service.UsageQuotaService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
-import reactor.util.retry.Retry;
 
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
@@ -39,15 +39,24 @@ public class EmbeddingClient {
     private final RateLimitService rateLimitService;
     private final UsageQuotaService usageQuotaService;
     private final ModelProviderConfigService modelProviderConfigService;
+    private final ModelWebClientFactory webClientFactory;
+    private final ModelCallGuard modelCallGuard;
+    private final ModelCallProperties modelCallProperties;
 
     public EmbeddingClient(ObjectMapper objectMapper,
                            RateLimitService rateLimitService,
                            UsageQuotaService usageQuotaService,
-                           ModelProviderConfigService modelProviderConfigService) {
+                           ModelProviderConfigService modelProviderConfigService,
+                           ModelWebClientFactory webClientFactory,
+                           ModelCallGuard modelCallGuard,
+                           ModelCallProperties modelCallProperties) {
         this.objectMapper = objectMapper;
         this.rateLimitService = rateLimitService;
         this.usageQuotaService = usageQuotaService;
         this.modelProviderConfigService = modelProviderConfigService;
+        this.webClientFactory = webClientFactory;
+        this.modelCallGuard = modelCallGuard;
+        this.modelCallProperties = modelCallProperties;
     }
 
     @PostConstruct
@@ -101,7 +110,7 @@ public class EmbeddingClient {
                         : rateLimitService.reserveEmbeddingUploadUsage(normalizedRequesterId, sub);
                 logger.debug("调用向量 API, 批次: {}-{} (size={})", start, end - 1, sub.size());
                 try {
-                    String response = callApiOnce(sub, provider);
+                    String response = callApi(sub, provider, usageType);
                     EmbeddingApiResponse parsedResponse = parseEmbeddingResponse(response, sub);
                     usageQuotaService.settleReservation(reservation, parsedResponse.totalTokens());
                     all.addAll(parsedResponse.vectors());
@@ -131,7 +140,11 @@ public class EmbeddingClient {
         }
     }
 
-    private String callApiOnce(List<String> batch, ModelProviderConfigService.ActiveProviderView provider) {
+    /**
+     * 重试、熔断、舱壁、QPS 限流都在 ModelCallGuard 里：网络错误、超时、429、5xx 按指数退避加抖动重试，
+     * 429/503 带 Retry-After 时按服务端要求等待。embedding 不切换供应商，不同模型的向量不能混用
+     */
+    private String callApi(List<String> batch, ModelProviderConfigService.ActiveProviderView provider, UsageType usageType) {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", provider.model());
         requestBody.put("input", batch);
@@ -144,28 +157,20 @@ public class EmbeddingClient {
                 provider.provider(), provider.model(), provider.dimension(), batch.size(),
                 batch.isEmpty() ? "空" : batch.get(0).substring(0, Math.min(50, batch.get(0).length())) + "...");
 
-        return buildClient(provider).post()
-                .uri("/embeddings")
-                .bodyValue(requestBody)
-                .retrieve()
-                .bodyToMono(String.class)
-                .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1))
-                        .filter(e -> e instanceof WebClientResponseException)
-                        .doBeforeRetry(signal -> logger.warn("重试API调用 - 尝试: {}, 错误: {}",
-                                signal.totalRetries() + 1, signal.failure().getMessage())))
-                .block(Duration.ofSeconds(30));
-    }
-
-    private WebClient buildClient(ModelProviderConfigService.ActiveProviderView provider) {
-        WebClient.Builder builder = WebClient.builder()
-                .baseUrl(ModelProviderConfigService.normalizeOpenAiCompatibleBaseUrl(provider.apiBaseUrl()))
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                // WebClient 的默认缓冲区大小限制（256KB）, 这里调高到 16MB
-                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024));
-        if (provider.apiKey() != null && !provider.apiKey().isBlank()) {
-            builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + provider.apiKey());
-        }
-        return builder.build();
+        // 查询向量是在线问答链路，上传向量化是后台任务，QPS 紧张时让位
+        ModelCallPriority priority = usageType == UsageType.QUERY ? ModelCallPriority.ONLINE : ModelCallPriority.BACKGROUND;
+        return modelCallGuard.guardMono(
+                ModelCallGuard.SCOPE_EMBEDDING,
+                provider.provider(),
+                priority,
+                Duration.ofSeconds(Math.max(modelCallProperties.getTimeout().getEmbeddingSeconds(), 1L)),
+                () -> webClientFactory.clientFor(ModelCallGuard.SCOPE_EMBEDDING, provider)
+                        .post()
+                        .uri("/embeddings")
+                        .bodyValue(requestBody)
+                        .retrieve()
+                        .bodyToMono(String.class)
+        ).block();
     }
 
     private EmbeddingApiResponse parseEmbeddingResponse(String response, List<String> inputTexts) throws Exception {

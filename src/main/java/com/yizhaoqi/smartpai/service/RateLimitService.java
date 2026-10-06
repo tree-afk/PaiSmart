@@ -2,26 +2,23 @@ package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.config.RateLimitProperties;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-
-import java.util.concurrent.TimeUnit;
 
 @Service
 public class RateLimitService {
 
-    private final StringRedisTemplate stringRedisTemplate;
+    private final TokenBucketRateLimiter tokenBucketRateLimiter;
     private final RateLimitProperties properties;
     private final RateLimitConfigService rateLimitConfigService;
     private final UsageQuotaService usageQuotaService;
 
     public RateLimitService(
-            StringRedisTemplate stringRedisTemplate,
+            TokenBucketRateLimiter tokenBucketRateLimiter,
             RateLimitProperties properties,
             RateLimitConfigService rateLimitConfigService,
             UsageQuotaService usageQuotaService
     ) {
-        this.stringRedisTemplate = stringRedisTemplate;
+        this.tokenBucketRateLimiter = tokenBucketRateLimiter;
         this.properties = properties;
         this.rateLimitConfigService = rateLimitConfigService;
         this.usageQuotaService = usageQuotaService;
@@ -96,19 +93,9 @@ public class RateLimitService {
     }
 
     private void checkSingleWindow(String key, long max, long windowSeconds, String message) {
-        Long current = stringRedisTemplate.opsForValue().increment(key);
-        if (current == null) {
-            return;
-        }
-
-        if (current == 1) {
-            stringRedisTemplate.expire(key, windowSeconds, TimeUnit.SECONDS);
-        }
-
-        if (current > max) {
-            Long ttl = stringRedisTemplate.getExpire(key, TimeUnit.SECONDS);
-            long retryAfterSeconds = ttl == null || ttl < 0 ? windowSeconds : ttl;
-            throw new RateLimitExceededException(message, retryAfterSeconds);
+        TokenBucketRateLimiter.Decision decision = tokenBucketRateLimiter.tryAcquireWindow(key, max, windowSeconds);
+        if (!decision.allowed()) {
+            throw new RateLimitExceededException(message, decision.retryAfterSeconds());
         }
     }
 }

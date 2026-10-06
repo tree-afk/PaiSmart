@@ -6,6 +6,7 @@ import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
 import com.yizhaoqi.smartpai.service.contextual.ChunkContextService;
+import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseLostException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,6 +64,14 @@ public class VectorizationService {
      * 文档 ID 为 fileMd5_chunkId：中途失败后 Kafka 重试会覆盖已写入的批次，不会产生重复文档。
      */
     public VectorizationUsageResult vectorizeWithUsage(String fileMd5, String userId, String orgTag, boolean isPublic, String requesterId) {
+        return vectorizeWithUsage(fileMd5, userId, orgTag, isPublic, requesterId, () -> { });
+    }
+
+    /**
+     * @param onBatchIndexed 每批分块写入 ES 后回调，消费者用它刷新任务心跳；回调抛出的异常会中止向量化
+     */
+    public VectorizationUsageResult vectorizeWithUsage(String fileMd5, String userId, String orgTag, boolean isPublic,
+                                                       String requesterId, Runnable onBatchIndexed) {
         try {
             logger.info("开始向量化文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
                        fileMd5, userId, orgTag, isPublic);
@@ -83,6 +92,7 @@ public class VectorizationService {
                     totalTokens += embedAndIndexBatch(fileMd5, chunks, userId, orgTag, isPublic, requesterId, provider,
                             modelVersion, contextual);
                     totalChunks += chunks.size();
+                    onBatchIndexed.run();
                 }
                 if (!slice.hasNext()) {
                     break;
@@ -96,6 +106,8 @@ public class VectorizationService {
                 logger.info("向量化完成，fileMd5: {}, chunks: {}, tokens: {}", fileMd5, totalChunks, totalTokens);
             }
             return new VectorizationUsageResult(totalTokens, totalChunks, modelVersion);
+        } catch (VectorizationLeaseLostException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("向量化失败，fileMd5: {}", fileMd5, e);
             String message = e.getMessage();

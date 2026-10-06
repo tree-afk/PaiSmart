@@ -81,6 +81,37 @@ public class ModelProviderConfigService {
     }
 
     /**
+     * LLM 调用链：激活的供应商在前，后面是可切换的备用供应商（已启用且配置了 API Key）。
+     * preferredBackups 非空时只用其中列出的供应商并按列出顺序，否则按编码顺序使用其余全部供应商
+     */
+    public List<ActiveProviderView> getLlmFailoverChain(List<String> preferredBackups) {
+        ActiveProviderView active = getActiveProvider(SCOPE_LLM);
+        List<ActiveProviderView> chain = new ArrayList<>();
+        chain.add(active);
+
+        Map<String, ProviderConfigView> candidates = new LinkedHashMap<>();
+        for (ProviderConfigView provider : resolveScope(SCOPE_LLM, currentSettings).providers()) {
+            if (provider.enabled() && !provider.provider().equals(active.provider())) {
+                candidates.put(provider.provider(), provider);
+            }
+        }
+        List<String> order = preferredBackups == null || preferredBackups.isEmpty()
+                ? candidates.keySet().stream().sorted().toList()
+                : preferredBackups.stream().map(this::normalizeProvider).distinct().toList();
+        for (String code : order) {
+            ProviderConfigView provider = candidates.get(code);
+            if (provider == null) {
+                continue;
+            }
+            ActiveProviderView backup = toActiveProvider(SCOPE_LLM, provider);
+            if (hasValue(backup.apiKey())) {
+                chain.add(backup);
+            }
+        }
+        return chain;
+    }
+
+    /**
      * 按 provider 编码获取配置（不要求处于激活状态），供 embedding 重建索引使用目标模型
      */
     public ActiveProviderView getProvider(String scope, String providerCode) {

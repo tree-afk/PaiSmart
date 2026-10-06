@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.service.contextual;
 
+import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
@@ -63,7 +64,7 @@ public class ChunkContextGenerator {
         while (true) {
             try {
                 return llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
-                        Math.max(properties.getMaxCompletionTokens(), 1));
+                        Math.max(properties.getMaxCompletionTokens(), 1), ModelCallPriority.BACKGROUND);
             } catch (RuntimeException e) {
                 if (!isRateLimited(e) || attempt >= properties.getRateLimitRetries()) {
                     throw e;

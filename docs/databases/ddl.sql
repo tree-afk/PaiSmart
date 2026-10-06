@@ -36,20 +36,28 @@ CREATE TABLE file_upload (
                              estimated_chunk_count INT DEFAULT NULL COMMENT '预估切片数',
                              actual_embedding_tokens BIGINT DEFAULT NULL COMMENT '实际 embedding token 数',
                              actual_chunk_count INT DEFAULT NULL COMMENT '实际切片数',
+                             vectorization_status VARCHAR(32) DEFAULT NULL COMMENT '向量化状态：PENDING / PROCESSING / COMPLETED / FAILED',
+                             vectorization_error_message VARCHAR(1000) DEFAULT NULL COMMENT '向量化失败原因',
+                             processing_started_at DATETIME(3) DEFAULT NULL COMMENT '本轮向量化被认领的时间，心跳和完成按它做条件更新',
+                             heartbeat_at DATETIME(3) DEFAULT NULL COMMENT '当前阶段最近一次进展时间（分片到达 / 开始合并 / 完成一批分块）',
+                             retry_count  INT              NOT NULL DEFAULT 0 COMMENT '卡住后被自动重新投递的次数',
                              created_at   TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                              merged_at    TIMESTAMP        NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '合并时间',
                              PRIMARY KEY (id),
                              UNIQUE KEY uk_file_upload_md5_user (file_md5, user_id),
                              INDEX idx_user (user_id),
-                             INDEX idx_org_tag (org_tag)
+                             INDEX idx_org_tag (org_tag),
+                             INDEX idx_vectorization_heartbeat (vectorization_status, heartbeat_at),
+                             INDEX idx_status_heartbeat (status, heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文件上传记录';
 CREATE TABLE chunk_info (
                             id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '分块记录唯一标识',
                             file_md5 VARCHAR(32) NOT NULL COMMENT '关联的文件MD5值',
+                            user_id VARCHAR(64) NOT NULL COMMENT '上传用户ID，分片按用户隔离',
                             chunk_index INT NOT NULL COMMENT '分块序号',
                             chunk_md5 VARCHAR(32) NOT NULL COMMENT '分块的MD5值',
-                            storage_path VARCHAR(255) NOT NULL COMMENT '分块在存储系统中的路径',
-                            UNIQUE KEY uk_file_md5_chunk_index (file_md5, chunk_index)
+                            storage_path VARCHAR(255) NOT NULL COMMENT '分块在存储系统中的路径：chunks/{userId}/{fileMd5}/{chunkIndex}',
+                            UNIQUE KEY uk_chunk_user_md5_index (user_id, file_md5, chunk_index)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文件分块信息表';
 
 CREATE TABLE document_vectors (
@@ -62,8 +70,37 @@ CREATE TABLE document_vectors (
                                   model_version VARCHAR(32) COMMENT '向量模型版本',
                                   user_id VARCHAR(64) NOT NULL COMMENT '上传用户ID',
                                   org_tag VARCHAR(50) COMMENT '文件所属组织标签',
-                                  is_public BOOLEAN NOT NULL DEFAULT FALSE COMMENT '文件是否公开'
+                                  is_public BOOLEAN NOT NULL DEFAULT FALSE COMMENT '文件是否公开',
+                                  UNIQUE KEY uk_document_vectors_md5_chunk (file_md5, chunk_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文档向量存储表';
+
+CREATE TABLE file_processing_outbox (
+                                        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+                                        file_md5 VARCHAR(32) NOT NULL COMMENT '文件MD5',
+                                        task_type VARCHAR(32) NOT NULL COMMENT '任务类型：UPLOAD_PROCESS / REINDEX',
+                                        payload TEXT NOT NULL COMMENT 'FileProcessingTask JSON',
+                                        status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '投递状态：PENDING / SENT',
+                                        attempts INT NOT NULL DEFAULT 0 COMMENT '投递次数',
+                                        next_attempt_at DATETIME(3) NOT NULL COMMENT '下次可投递时间，认领后推迟到租约结束',
+                                        last_error VARCHAR(1000) DEFAULT NULL COMMENT '最近一次投递失败原因',
+                                        created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+                                        sent_at DATETIME(3) DEFAULT NULL COMMENT '投递成功时间',
+                                        INDEX idx_outbox_status_next_attempt (status, next_attempt_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文件处理任务投递 outbox';
+
+CREATE TABLE file_processing_dead_letter (
+                                             id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+                                             file_md5 VARCHAR(32) DEFAULT NULL COMMENT '文件MD5',
+                                             task_type VARCHAR(32) DEFAULT NULL COMMENT '任务类型',
+                                             payload TEXT COMMENT '死信消息内容',
+                                             error_message VARCHAR(1000) DEFAULT NULL COMMENT '最后一次处理异常',
+                                             source_topic VARCHAR(255) NOT NULL COMMENT '死信主题',
+                                             source_partition INT NOT NULL COMMENT '死信分区',
+                                             source_offset BIGINT NOT NULL COMMENT '死信偏移量',
+                                             created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3) COMMENT '落库时间',
+                                             UNIQUE KEY uk_dead_letter_source (source_topic, source_partition, source_offset),
+                                             INDEX idx_dead_letter_md5 (file_md5)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='文件处理死信记录';
 
 CREATE TABLE rate_limit_configs (
                                     config_key VARCHAR(64) PRIMARY KEY COMMENT '限流配置键',
@@ -152,7 +189,7 @@ CREATE TABLE IF NOT EXISTS `user_token_record` (
                                `record_date` DATE NOT NULL COMMENT '记录日期（按天统计）',
                                `token_type` VARCHAR(20) NOT NULL COMMENT 'Token 类型：LLM/EMBEDDING',
                                `change_type` VARCHAR(20) NOT NULL COMMENT '变动类型：INCREASE/CONSUME',
-                                `request_count` BIGINT NOT NULL DEFAULT 0 COMMENT '请求次数（一次充值或对话可能包含多次 API 请求）'
+                                `request_count` BIGINT NOT NULL DEFAULT 0 COMMENT '请求次数（一次充值或对话可能包含多次 API 请求）',
                                `amount` BIGINT NOT NULL COMMENT '变动数量',
                                `balance_before` BIGINT DEFAULT NULL COMMENT '变动前的余额',
                                `balance_after` BIGINT DEFAULT NULL COMMENT '变动后的余额',

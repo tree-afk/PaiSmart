@@ -100,6 +100,11 @@ function handleStartPayload(assistant: Api.Chat.Message, payload: Record<string,
   if (!assistant.timestamp && payload.timestamp) {
     assistant.timestamp = new Date(payload.timestamp).toISOString();
   }
+  // 重复提交同一问题时后端复用进行中的回答，start 里带上已经生成的内容
+  if (payload.resumed && typeof payload.content === 'string' && payload.content.length > assistant.content.length) {
+    assistant.content = payload.content;
+    assistant.status = 'loading';
+  }
 }
 
 async function handleCompletionPayload(assistant: Api.Chat.Message, payload: Record<string, any>) {
