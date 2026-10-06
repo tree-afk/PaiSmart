@@ -26,23 +26,27 @@ import java.util.List;
 public class FileProcessingRecoveryJob {
 
     private static final Logger logger = LoggerFactory.getLogger(FileProcessingRecoveryJob.class);
+    static final String LEGACY_TASK_MESSAGE = "升级前中断的历史任务，已停止自动重试，如需要请手动重试向量化";
 
     private final FileUploadRepository fileUploadRepository;
     private final FileProcessingOutboxService outboxService;
     private final UploadService uploadService;
     private final FileProcessingReliabilityProperties properties;
     private final TransactionTemplate transactionTemplate;
+    private final DocumentStatusNotifier statusNotifier;
 
     public FileProcessingRecoveryJob(FileUploadRepository fileUploadRepository,
                                      FileProcessingOutboxService outboxService,
                                      UploadService uploadService,
                                      FileProcessingReliabilityProperties properties,
-                                     TransactionTemplate transactionTemplate) {
+                                     TransactionTemplate transactionTemplate,
+                                     DocumentStatusNotifier statusNotifier) {
         this.fileUploadRepository = fileUploadRepository;
         this.outboxService = outboxService;
         this.uploadService = uploadService;
         this.properties = properties;
         this.transactionTemplate = transactionTemplate;
+        this.statusNotifier = statusNotifier;
     }
 
     @Scheduled(fixedDelayString = "${file.processing.reliability.recovery-interval-ms:60000}",
@@ -57,7 +61,7 @@ public class FileProcessingRecoveryJob {
     }
 
     /**
-     * 心跳超时的 PROCESSING：未超重试上限的改回 PENDING 并重新投递，超过上限的标记失败并告警
+     * 心跳超时的 PROCESSING：升级前遗留的直接标失败；未超重试上限的改回 PENDING 并重新投递，超过上限的标记失败并告警
      */
     int recoverStaleVectorizations() {
         LocalDateTime now = now();
@@ -65,10 +69,22 @@ public class FileProcessingRecoveryJob {
         List<FileUpload> stale = fileUploadRepository.findStaleVectorizations(staleBefore, page());
         int handled = 0;
         for (FileUpload file : stale) {
+            if (file.getProcessingStartedAt() == null) {
+                // 没有认领时间说明是升级前旧代码留下的 PROCESSING：不知道卡了多久、用户还要不要，
+                // 自动重投会一次性把几个月的历史任务全部捞回队列，挡住新上传。直接标失败，由用户决定是否重试
+                if (fileUploadRepository.failStaleVectorization(file.getId(), file.getHeartbeatAt(), LEGACY_TASK_MESSAGE, now) == 1) {
+                    handled++;
+                    statusNotifier.notifyChanged(file.getId());
+                    logger.warn("升级前中断的历史向量化任务，已标记失败不再自动重投: fileMd5={}, fileUploadId={}, lastUpdated={}",
+                            file.getFileMd5(), file.getId(), file.getMergedAt());
+                }
+                continue;
+            }
             if (file.getRetryCount() >= properties.getMaxRetries()) {
                 String message = String.format("处理超时，已自动重试 %d 次仍未完成，请手动重试", file.getRetryCount());
                 if (fileUploadRepository.failStaleVectorization(file.getId(), file.getHeartbeatAt(), message, now) == 1) {
                     handled++;
+                    statusNotifier.notifyChanged(file.getId());
                     logger.error("[ALERT] 向量化任务多次卡住，已标记失败: fileMd5={}, fileUploadId={}, retryCount={}, lastHeartbeat={}",
                             file.getFileMd5(), file.getId(), file.getRetryCount(), file.getHeartbeatAt());
                 }
@@ -84,6 +100,7 @@ public class FileProcessingRecoveryJob {
             });
             if (Boolean.TRUE.equals(requeued)) {
                 handled++;
+                statusNotifier.notifyChanged(file.getId());
                 logger.warn("向量化任务心跳超时，已改回待处理并重新投递: fileMd5={}, fileUploadId={}, retryCount={}, lastHeartbeat={}",
                         file.getFileMd5(), file.getId(), file.getRetryCount() + 1, file.getHeartbeatAt());
             }

@@ -31,6 +31,7 @@ class FileProcessingRecoveryJobTest {
     private final UploadService uploadService = mock(UploadService.class);
     private final TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
     private final FileProcessingReliabilityProperties properties = new FileProcessingReliabilityProperties();
+    private final DocumentStatusNotifier statusNotifier = mock(DocumentStatusNotifier.class);
     private FileProcessingRecoveryJob job;
 
     @BeforeEach
@@ -38,7 +39,7 @@ class FileProcessingRecoveryJobTest {
     void setUp() {
         when(transactionTemplate.execute(any())).thenAnswer(invocation ->
                 ((TransactionCallback<Object>) invocation.getArgument(0)).doInTransaction(null));
-        job = new FileProcessingRecoveryJob(repository, outboxService, uploadService, properties, transactionTemplate);
+        job = new FileProcessingRecoveryJob(repository, outboxService, uploadService, properties, transactionTemplate, statusNotifier);
     }
 
     @Test
@@ -54,6 +55,22 @@ class FileProcessingRecoveryJobTest {
         assertEquals("md5", task.getValue().getFileMd5());
         // 重新投递不带预签名 URL，消费者直接读 MinIO 合并对象
         assertNull(task.getValue().getFilePath());
+        verify(statusNotifier).notifyChanged(7L);
+    }
+
+    @Test
+    void legacyTaskWithoutClaimTimeIsFailedInsteadOfRequeued() {
+        FileUpload legacy = stale(0);
+        legacy.setProcessingStartedAt(null);
+        legacy.setHeartbeatAt(null);
+        when(repository.findStaleVectorizations(any(), any())).thenReturn(List.of(legacy));
+        when(repository.failStaleVectorization(eq(7L), eq(null), eq(FileProcessingRecoveryJob.LEGACY_TASK_MESSAGE), any())).thenReturn(1);
+
+        assertEquals(1, job.recoverStaleVectorizations());
+
+        verify(repository, never()).requeueStaleVectorization(any(), any(), any());
+        verify(outboxService, never()).append(any());
+        verify(statusNotifier).notifyChanged(7L);
     }
 
     @Test
@@ -103,6 +120,7 @@ class FileProcessingRecoveryJobTest {
         file.setStatus(FileUpload.STATUS_COMPLETED);
         file.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_PROCESSING);
         file.setHeartbeatAt(LocalDateTime.now().minusHours(1));
+        file.setProcessingStartedAt(LocalDateTime.now().minusHours(2));
         file.setRetryCount(retryCount);
         return file;
     }

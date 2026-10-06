@@ -88,3 +88,12 @@
 - Kafka 消费失败仍由 `DefaultErrorHandler` 重试 4 次，和模型客户端的重试叠加后，最坏一批分块会调 5 × 3 次模型。任务级重试兜的是解析、ES 这类非模型错误；要做到严格只在客户端一层重试，需要让消费者对模型调用失败不再做任务级重试
 - `DocumentService.deleteDocument` 仍按 fileMd5 删除所有用户的记录、合并对象和 ES 数据，同一个文件多用户共享时，一方删除会影响另一方。这和这次的分片隔离是两回事，没有改
 - `DeepSeekClient`、`RerankClient`、`ModelProviderConfigService.testConnection` 还是各自新建 WebClient，不在这次范围内
+
+## 上线后修复（2026-10-07）
+
+第一次发布后，恢复任务把生产上 29 个升级前就卡在 PROCESSING 的历史文件（4 月到 9 月）全部重新投递，其中大文件每次 LiteParse 解析约 4 分钟，又因为上传者 Embedding 余额不足失败，Kafka 整份重试 5 次，单消费线程被占住约半小时，新上传排在后面。积压最终自行排空（15 个处理成功，14 个余额不足失败并进入死信表），没有改动生产数据。随后做了三处修复：
+
+- 恢复任务只接管新代码认领过的任务：没有 `processing_started_at` 的 PROCESSING 记录视为升级前遗留，直接标记 FAILED（"升级前中断的历史任务，已停止自动重试，如需要请手动重试向量化"），不再自动重投
+- 余额不足改为不可重试：新增 `InsufficientBalanceException`（继承 `RateLimitExceededException`，聊天链路仍返回 429），消费者遇到它直接标记失败并提交消息，不走 Kafka 重试和死信；上下文生成、embedding 重建的限流重试也跳过它
+- 知识库页面改为推送：认领、完成、失败、投递、卡住恢复等状态变化后，`DocumentStatusNotifier` 在事务提交后把最新状态发到 Redis 频道 `paismart:document-status`，每个实例订阅后通过聊天 WebSocket 推给文件上传者打开的所有页面（`ChatSessionRegistry` 改为记录用户的全部连接）。前端收到 `document_status` 事件直接更新行；原来 3 秒一次的轮询改为兜底，WebSocket 正常时 30 秒、断开时 5 秒，重连后整体刷新一次
+- 本地验证：正常上传推送 PENDING → PROCESSING → COMPLETED 约 1.6 秒；余额不足只认领 1 次、无死信；历史卡住任务 8 秒内被标记失败且未重投；浏览器里点"重试向量化"后行状态由推送更新，期间没有轮询请求，控制台无错误

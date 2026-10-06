@@ -304,6 +304,9 @@ watch(wsData, val => {
     return;
   }
 
+  // 知识库文档状态推送和聊天共用一条连接，聊天这边不处理
+  if (payload.type === 'document_status') return;
+
   const assistant = findAssistantMessage(payload.generationId, payload.conversationId, payload.type === 'start');
 
   if (!assistant) return;

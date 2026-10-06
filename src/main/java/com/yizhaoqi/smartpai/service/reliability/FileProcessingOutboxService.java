@@ -45,6 +45,7 @@ public class FileProcessingOutboxService {
     private final ObjectMapper objectMapper;
     private final FileProcessingReliabilityProperties properties;
     private final Executor dispatchExecutor;
+    private final DocumentStatusNotifier statusNotifier;
 
     public FileProcessingOutboxService(FileProcessingOutboxRepository outboxRepository,
                                        FileUploadRepository fileUploadRepository,
@@ -52,7 +53,8 @@ public class FileProcessingOutboxService {
                                        KafkaConfig kafkaConfig,
                                        ObjectMapper objectMapper,
                                        FileProcessingReliabilityProperties properties,
-                                       @Qualifier("outboxDispatchExecutor") Executor dispatchExecutor) {
+                                       @Qualifier("outboxDispatchExecutor") Executor dispatchExecutor,
+                                       DocumentStatusNotifier statusNotifier) {
         this.outboxRepository = outboxRepository;
         this.fileUploadRepository = fileUploadRepository;
         this.kafkaTemplate = kafkaTemplate;
@@ -60,6 +62,7 @@ public class FileProcessingOutboxService {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.dispatchExecutor = dispatchExecutor;
+        this.statusNotifier = statusNotifier;
     }
 
     /**
@@ -78,6 +81,7 @@ public class FileProcessingOutboxService {
         }
         fileUploadRepository.save(fileUpload);
         append(task);
+        statusNotifier.notifyChanged(fileUpload.getId());
     }
 
     /**

@@ -23,7 +23,7 @@ import static org.mockito.Mockito.when;
 class VectorizationLeaseServiceTest {
 
     private final FileUploadRepository repository = mock(FileUploadRepository.class);
-    private final VectorizationLeaseService service = new VectorizationLeaseService(repository, new FileProcessingReliabilityProperties());
+    private final VectorizationLeaseService service = new VectorizationLeaseService(repository, new FileProcessingReliabilityProperties(), mock(DocumentStatusNotifier.class));
 
     @Test
     void completedUploadTaskIsSkippedButReindexIsClaimed() {

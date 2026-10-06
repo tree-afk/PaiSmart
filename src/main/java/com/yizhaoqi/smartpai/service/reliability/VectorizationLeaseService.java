@@ -27,11 +27,14 @@ public class VectorizationLeaseService {
 
     private final FileUploadRepository fileUploadRepository;
     private final FileProcessingReliabilityProperties properties;
+    private final DocumentStatusNotifier statusNotifier;
 
     public VectorizationLeaseService(FileUploadRepository fileUploadRepository,
-                                     FileProcessingReliabilityProperties properties) {
+                                     FileProcessingReliabilityProperties properties,
+                                     DocumentStatusNotifier statusNotifier) {
         this.fileUploadRepository = fileUploadRepository;
         this.properties = properties;
+        this.statusNotifier = statusNotifier;
     }
 
     /**
@@ -64,6 +67,7 @@ public class VectorizationLeaseService {
                 .map(FileUpload::getProcessingStartedAt)
                 .orElse(now);
         logger.info("已认领向量化任务: fileMd5={}, fileUploadId={}, taskType={}", task.getFileMd5(), fileUpload.getId(), task.getTaskType());
+        statusNotifier.notifyChanged(fileUpload.getId());
         return Optional.of(new VectorizationLease(fileUpload.getId(), fileUpload.getFileMd5(), claimedAt));
     }
 
@@ -91,6 +95,7 @@ public class VectorizationLeaseService {
             logger.warn("向量化已完成但认领已失效，不写完成状态: fileMd5={}, fileUploadId={}", lease.fileMd5(), lease.fileUploadId());
             return false;
         }
+        statusNotifier.notifyChanged(lease.fileUploadId());
         return true;
     }
 
@@ -103,7 +108,9 @@ public class VectorizationLeaseService {
         );
         if (updated == 0) {
             logger.warn("向量化失败但认领已失效，不写失败状态: fileMd5={}, fileUploadId={}", lease.fileMd5(), lease.fileUploadId());
+            return;
         }
+        statusNotifier.notifyChanged(lease.fileUploadId());
     }
 
     /**

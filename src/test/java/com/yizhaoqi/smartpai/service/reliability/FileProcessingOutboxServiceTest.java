@@ -30,7 +30,7 @@ class FileProcessingOutboxServiceTest {
     private final FileProcessingReliabilityProperties properties = new FileProcessingReliabilityProperties();
     private final FileProcessingOutboxService service = new FileProcessingOutboxService(
             outboxRepository, mock(FileUploadRepository.class), kafkaTemplate, mock(KafkaConfig.class),
-            new ObjectMapper(), properties, Runnable::run);
+            new ObjectMapper(), properties, Runnable::run, mock(DocumentStatusNotifier.class));
 
     @Test
     void unclaimedMessageIsNotSentTwice() throws Exception {

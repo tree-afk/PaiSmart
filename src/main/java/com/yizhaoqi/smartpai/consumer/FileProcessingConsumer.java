@@ -1,6 +1,7 @@
 package com.yizhaoqi.smartpai.consumer;
 
 import com.yizhaoqi.smartpai.config.KafkaConfig;
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
@@ -97,11 +98,27 @@ public class FileProcessingConsumer {
             // 任务已被定时任务改回待处理并重新投递，交给新的认领者，这条消息正常提交
             log.warn("向量化认领已失效，放弃本次处理: fileMd5={}", task.getFileMd5());
         } catch (Exception e) {
+            if (isInsufficientBalance(e)) {
+                // 余额不足重试多少次结果都一样，每次重试还要重新解析整份文件、占住消费线程，直接标记失败并提交消息
+                leaseService.fail(lease, e);
+                log.warn("用户余额不足，向量化失败且不重试: fileMd5={}, userId={}, reason={}",
+                        task.getFileMd5(), task.getUserId(), e.getMessage());
+                return;
+            }
             leaseService.fail(lease, e);
             log.error("Error processing task: {}", task, e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
             throw new RuntimeException("Error processing task", e);
         }
+    }
+
+    private static boolean isInsufficientBalance(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof InsufficientBalanceException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

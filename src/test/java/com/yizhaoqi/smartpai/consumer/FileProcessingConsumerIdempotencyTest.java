@@ -1,5 +1,6 @@
 package com.yizhaoqi.smartpai.consumer;
 
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
@@ -93,6 +94,18 @@ class FileProcessingConsumerIdempotencyTest {
 
         verify(leaseService).fail(eq(lease), any(RuntimeException.class));
         verifyNoInteractions(parseService);
+    }
+
+    @Test
+    void insufficientBalanceFailsWithoutKafkaRetry() throws Exception {
+        when(leaseService.claim(any())).thenReturn(Optional.of(lease));
+        when(vectorizationService.vectorizeWithUsage(anyString(), anyString(), anyString(), anyBoolean(), anyString(), any(Runnable.class)))
+                .thenThrow(new RuntimeException("向量化失败", new RuntimeException("向量生成失败",
+                        new InsufficientBalanceException("Embedding Token 余额不足"))));
+
+        // 不抛异常：Kafka 不会重试，也不会进死信队列
+        assertDoesNotThrow(() -> consumer.processTask(task()));
+        verify(leaseService).fail(eq(lease), any(RuntimeException.class));
     }
 
     private FileProcessingTask task() {

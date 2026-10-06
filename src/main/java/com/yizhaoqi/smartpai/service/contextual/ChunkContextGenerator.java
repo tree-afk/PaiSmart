@@ -4,6 +4,7 @@ import com.yizhaoqi.smartpai.client.resilience.ModelCallPriority;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.ContextualRetrievalProperties;
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.service.LlmProviderRouter;
 import org.slf4j.Logger;
@@ -106,6 +107,10 @@ public class ChunkContextGenerator {
 
     private static boolean isRateLimited(Throwable error) {
         for (Throwable t = error; t != null; t = t.getCause()) {
+            // 余额不足等多久都一样，不按限流重试
+            if (t instanceof InsufficientBalanceException) {
+                return false;
+            }
             if (t instanceof RateLimitExceededException) {
                 return true;
             }

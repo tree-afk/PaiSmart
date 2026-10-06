@@ -432,6 +432,59 @@ function renderActualEmbeddingUsage(row: Api.KnowledgeBase.UploadTask) {
   return <span class="text-muted text-xs">-</span>;
 }
 
+// 向量化状态由后端通过聊天 WebSocket 推送（document_status 事件），这里复用同一条连接
+const chatStore = useChatStore();
+const { wsData, connectionStatus } = storeToRefs(chatStore);
+
+interface DocumentStatusEvent {
+  type: 'document_status';
+  fileMd5: string;
+  status: UploadStatus;
+  vectorizationStatus: Api.KnowledgeBase.UploadTask['vectorizationStatus'];
+  vectorizationErrorMessage: string | null;
+  actualEmbeddingTokens: number | null;
+  actualChunkCount: number | null;
+}
+
+function applyDocumentStatus(event: DocumentStatusEvent) {
+  const rows = [...tasks.value, ...data.value].filter(item => item.fileMd5 === event.fileMd5);
+  if (rows.length === 0) {
+    // 其他页面上传的新文件，列表里还没有，整体刷新一次
+    getList();
+    return;
+  }
+  rows.forEach(row => {
+    Object.assign(row, {
+      vectorizationStatus: event.vectorizationStatus,
+      vectorizationErrorMessage: event.vectorizationErrorMessage,
+      actualEmbeddingTokens: event.actualEmbeddingTokens ?? undefined,
+      actualChunkCount: event.actualChunkCount ?? undefined
+    });
+  });
+}
+
+watch(wsData, val => {
+  if (!val) return;
+  try {
+    const payload = JSON.parse(val);
+    if (payload?.type === 'document_status' && payload.fileMd5) {
+      applyDocumentStatus(payload as DocumentStatusEvent);
+    }
+  } catch {
+    // 非 JSON 消息（心跳等）忽略
+  }
+});
+
+// 断线期间的推送会丢失，重连后整体刷新一次
+watch(connectionStatus, (status, previous) => {
+  if (status === 'OPEN' && previous && previous !== 'OPEN') {
+    getList();
+  }
+});
+
+// 兜底查询：推送正常时 30 秒一次，WebSocket 没连上时退回 5 秒
+const FALLBACK_POLL_INTERVAL_MS = 30_000;
+const DISCONNECTED_POLL_INTERVAL_MS = 5_000;
 let vectorizationPollingTimer: number | null = null;
 
 function clearVectorizationPolling() {
@@ -448,10 +501,11 @@ function scheduleVectorizationPolling() {
     return;
   }
 
+  const interval = connectionStatus.value === 'OPEN' ? FALLBACK_POLL_INTERVAL_MS : DISCONNECTED_POLL_INTERVAL_MS;
   vectorizationPollingTimer = window.setTimeout(async () => {
     await getList();
     scheduleVectorizationPolling();
-  }, 3000);
+  }, interval);
 }
 
 watch(

@@ -1,7 +1,7 @@
 package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.config.UsageQuotaProperties;
-import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.model.DailyReqCountStat;
 import com.yizhaoqi.smartpai.model.DailyUsageStat;
 import com.yizhaoqi.smartpai.model.UserTokenRecord;
@@ -45,8 +45,8 @@ public class UsageBalanceQuotaService extends UsageQuotaService {
         // 检查用户余额是否充足
         if (!userTokenService.hasEnoughLlmTokens(userId, reserveTokens)) {
             Long balance = userTokenService.getLlmTokenBalance(userId);
-            throw new RateLimitExceededException(
-                    "LLM Token 余额不足，预估需要：" + reserveTokens + ", 当前余额：" + balance, 0);
+            throw new InsufficientBalanceException(
+                    "LLM Token 余额不足，预估需要：" + reserveTokens + ", 当前余额：" + balance);
         }
 
         // 用户余额模式下，不需要实际的 Redis 预留操作，只需要返回一个标记对象
@@ -68,8 +68,8 @@ public class UsageBalanceQuotaService extends UsageQuotaService {
         // 检查用户余额是否充足
         if (!userTokenService.hasEnoughEmbeddingTokens(userId, estimatedTokens)) {
             Long balance = userTokenService.getEmbeddingTokenBalance(userId);
-            throw new RateLimitExceededException(
-                    "Embedding Token 余额不足，预估需要：" + estimatedTokens + ", 当前余额：" + balance, 0);
+            throw new InsufficientBalanceException(
+                    "Embedding Token 余额不足，预估需要：" + estimatedTokens + ", 当前余额：" + balance);
         }
 
         // 用户余额模式下，不需要实际的 Redis 预留操作

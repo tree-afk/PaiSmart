@@ -5,6 +5,7 @@ import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
+import com.yizhaoqi.smartpai.service.reliability.DocumentStatusNotifier;
 import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
@@ -96,6 +97,9 @@ public class DocumentService {
 
     @Autowired
     private FileProcessingOutboxService fileProcessingOutboxService;
+
+    @Autowired
+    private DocumentStatusNotifier documentStatusNotifier;
 
     @Autowired(required = false)
     private ApplicationEventPublisher eventPublisher;
@@ -304,6 +308,7 @@ public class DocumentService {
             fileUpload.setActualChunkCount(null);
         }
         fileUploadRepository.save(fileUpload);
+        documentStatusNotifier.notifyChanged(fileUpload.getId());
     }
 
     private void markVectorizationCompleted(FileUpload fileUpload, VectorizationService.VectorizationUsageResult result) {
@@ -312,12 +317,14 @@ public class DocumentService {
         fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_COMPLETED);
         fileUpload.setVectorizationErrorMessage(null);
         fileUploadRepository.save(fileUpload);
+        documentStatusNotifier.notifyChanged(fileUpload.getId());
     }
 
     private void markVectorizationFailed(FileUpload fileUpload, String errorMessage) {
         fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_FAILED);
         fileUpload.setVectorizationErrorMessage(trimVectorizationErrorMessage(errorMessage));
         fileUploadRepository.save(fileUpload);
+        documentStatusNotifier.notifyChanged(fileUpload.getId());
     }
 
     private void markVectorizationFailed(FileUpload fileUpload, Throwable error) {

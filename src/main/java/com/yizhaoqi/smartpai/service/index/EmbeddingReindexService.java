@@ -6,6 +6,7 @@ import com.yizhaoqi.smartpai.config.EmbeddingReindexProperties;
 import com.yizhaoqi.smartpai.consumer.FileProcessingListenerGate;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.exception.CustomException;
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.model.FileUpload;
@@ -311,6 +312,10 @@ public class EmbeddingReindexService {
 
     private static boolean isRateLimited(Throwable error) {
         for (Throwable t = error; t != null; t = t.getCause()) {
+            // 余额不足等多久都一样，不按限流重试
+            if (t instanceof InsufficientBalanceException) {
+                return false;
+            }
             if (t instanceof RateLimitExceededException) {
                 return true;
             }

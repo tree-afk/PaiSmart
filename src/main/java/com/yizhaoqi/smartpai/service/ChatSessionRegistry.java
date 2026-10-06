@@ -18,6 +18,8 @@ public class ChatSessionRegistry {
 
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, GenerationSession> generationSessions = new ConcurrentHashMap<>();
+    // 用户打开的所有页面连接，文档状态这类广播事件要推给每个页面，不只是最后连上的那个
+    private final ConcurrentHashMap<String, Set<WebSocketSession>> userSessions = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
 
     private record GenerationSession(String userId, Set<WebSocketSession> sessions) {}
@@ -28,10 +30,15 @@ public class ChatSessionRegistry {
 
     public void registerSession(String userId, WebSocketSession session) {
         sessions.put(userId, session);
+        userSessions.computeIfAbsent(userId, ignored -> ConcurrentHashMap.newKeySet()).add(session);
     }
 
     public void unregisterSession(String userId, WebSocketSession session) {
         sessions.computeIfPresent(userId, (key, current) -> current == session ? null : current);
+        userSessions.computeIfPresent(userId, (key, current) -> {
+            current.remove(session);
+            return current.isEmpty() ? null : current;
+        });
         generationSessions.values().forEach(generation -> generation.sessions().remove(session));
     }
 
@@ -68,6 +75,17 @@ public class ChatSessionRegistry {
             return;
         }
         sendJsonToSession(sessions.get(userId), payload);
+    }
+
+    /**
+     * 推给该用户在本实例上的所有页面连接
+     */
+    public void sendJsonToAllUserSessions(String userId, Map<String, ?> payload) {
+        Set<WebSocketSession> targets = userSessions.get(userId);
+        if (targets == null) {
+            return;
+        }
+        targets.forEach(session -> sendJsonToSession(session, payload));
     }
 
     public void sendJsonToSession(WebSocketSession session, Map<String, ?> payload) {
