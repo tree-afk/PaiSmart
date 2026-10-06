@@ -64,7 +64,7 @@
 
 ## 验证记录（2026-10-06）
 
-- `mvn test`：301 个用例，0 失败，8 个错误。这 8 个都是 Spring 上下文加载用例，原因是本机 `.env` 里 MinIO 密钥为空，改动前同样失败。传入假的 MinIO 密钥后，`SmartPaiApplicationTests` 能在 H2 上完整启动，新增的 Bean、JPQL、定时任务、DLT 监听器都能装配
+- `mvn test`：301 个用例，0 失败，8 个错误。这 8 个都是 Spring 上下文加载用例，改动前同样失败：`.env` 里 MinIO 密钥写的是 `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY`，而 `.env` 激活的 dev profile 读的是 `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`，测试时取到空值。传入密钥后，`SmartPaiApplicationTests` 能在 H2 上完整启动，新增的 Bean、JPQL、定时任务、DLT 监听器都能装配
 - 新增测试：
   - `FileUploadRepositoryReliabilityTest`：在 H2 上实际执行所有条件更新
   - `LlmProviderRouterFailoverTest`：两个本地 HTTP 服务模拟主备供应商，走真实 WebClient
@@ -72,7 +72,15 @@
   - `UploadServiceTest` 里两个改动前就失败的旧断言，已按现有逻辑更新
 - Lua 令牌桶在本机 Redis 上用 `redis-cli --eval` 验证过突发量、等待时间和后台预留
 - 迁移脚本和新版 `ddl.sql` 在本机 MySQL 8.0 的临时库上执行通过，验证完已删除临时库。顺手修了 `ddl.sql` 里 `user_token_record.request_count` 行缺逗号的问题，它会让整份脚本执行失败
-- 未做：本机 Kafka、ES、MinIO 没启动，后端也没在运行，所以没有跑上传 → 合并 → 消费 → 检索的真实链路，也没在浏览器里验证重复提交
+- 本机真实链路（2026-10-07，后端跑在 8082，连 MySQL `PaiSmart1`、Redis、Kafka、ES、MinIO，测试账号和数据验证完已删除）：
+  - 升级前 `PaiSmart1` 里有一个文件的 7 个分块各存了 5 份（1 次投递 + 4 次 Kafka 重试），正是 P0 要修的问题；按迁移脚本去重 28 行后启动，新列、新表、`chunk_info` 和 `document_vectors` 的唯一键全部生效
+  - 上传 → 合并 → outbox 投递 → 认领 → 清理 → 解析 → 向量化：分片落在 `chunks/{userId}/{md5}/0`，合并后分片记录清空，outbox 一次投递成功，MySQL 和 ES 各 2 个分块
+  - 重复投递：同一任务再投一次，消费者日志"文件已向量化完成，跳过重复投递"，没有再调 embedding
+  - 卡住恢复：把文件改成心跳 30 分钟前的 PROCESSING，恢复任务改回待处理并重新投递，`retry_count = 1`，重新处理后仍是 2 个分块，ES 无残留
+  - 重复提问：两个 WebSocket 连接相隔 300ms 发同一问题，拿到同一个 generationId，第二个带 `resumed: true`，只生成一次；回答正确引用了刚上传的文件
+  - 废弃上传：上传一个分片不合并，心跳改成两天前，恢复任务删除了记录、分片记录、MinIO 分片和 bitmap（bitmap 写入时 TTL 为 48 小时）
+  - 没在浏览器里点：8081 被 toBeBetterJavaer 的 vuepress 占着，前端代理指向 8081，这次用接口和 WebSocket 脚本验证；前端 `input-box.vue` 的改动只过了 eslint
+- 升级后 `PaiSmart1.chunk_info` 里还有 30 条 user_id 为空的旧分片记录，没有对应的上传中记录，是改动前废弃上传留下的，恢复任务不会处理，可以手动删除
 
 ## 遗留和注意
 
