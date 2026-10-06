@@ -32,9 +32,10 @@ public class ChunkInfo {
 
     /**
      * 上传分片的用户ID
-     * 分片按用户隔离：两个用户同时上传同一个文件时，各自的分片记录和对象互不影响
+     * 分片按用户隔离：两个用户同时上传同一个文件时，各自的分片记录和对象互不影响。
+     * 带默认值是为了兼容回滚：旧版本插入分片时不写这一列
      */
-    @Column(name = "user_id", nullable = false, length = 64)
+    @Column(name = "user_id", nullable = false, length = 64, columnDefinition = "VARCHAR(64) DEFAULT ''")
     private String userId;
 
     /**

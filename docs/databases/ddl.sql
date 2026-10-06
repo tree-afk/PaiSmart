@@ -53,7 +53,7 @@ CREATE TABLE file_upload (
 CREATE TABLE chunk_info (
                             id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '分块记录唯一标识',
                             file_md5 VARCHAR(32) NOT NULL COMMENT '关联的文件MD5值',
-                            user_id VARCHAR(64) NOT NULL COMMENT '上传用户ID，分片按用户隔离',
+                            user_id VARCHAR(64) NOT NULL DEFAULT '' COMMENT '上传用户ID，分片按用户隔离，默认值兼容旧版本回滚',
                             chunk_index INT NOT NULL COMMENT '分块序号',
                             chunk_md5 VARCHAR(32) NOT NULL COMMENT '分块的MD5值',
                             storage_path VARCHAR(255) NOT NULL COMMENT '分块在存储系统中的路径：chunks/{userId}/{fileMd5}/{chunkIndex}',
