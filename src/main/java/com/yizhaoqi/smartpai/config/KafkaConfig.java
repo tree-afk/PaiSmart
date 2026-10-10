@@ -5,6 +5,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -20,9 +22,12 @@ import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Configuration
 public class KafkaConfig {
+
+    private static final Logger logger = LoggerFactory.getLogger(KafkaConfig.class);
 
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
@@ -47,6 +52,20 @@ public class KafkaConfig {
 
     @Value("${spring.kafka.consumer.properties.spring.json.trusted.packages}")
     private String trustedPackages;
+
+    /** 单个 PDF 的 LiteParse 解析上限 */
+    @Value("${file.parsing.liteparse.timeout-seconds:300}")
+    private long liteparseTimeoutSeconds;
+
+    /** 拿解析并发许可的最长等待 */
+    @Value("${file.parsing.permit-timeout-seconds:120}")
+    private long parsePermitTimeoutSeconds;
+
+    private final FileProcessingReliabilityProperties reliabilityProperties;
+
+    public KafkaConfig(FileProcessingReliabilityProperties reliabilityProperties) {
+        this.reliabilityProperties = reliabilityProperties;
+    }
 
 
     public String getFileProcessingTopic() {
@@ -117,7 +136,23 @@ public class KafkaConfig {
         config.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
         // 生产端用事务发送，消费端只读已提交的消息，否则事务中止的消息也会被消费
         config.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
+        // 一条消息就是一份文件的解析 + 向量化，耗时以分钟计：一次只拉一条，避免一批里后面的消息跟着等
+        config.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, 1);
+        // 两次 poll 的最大间隔要大于单条消息的最长处理时间，否则消费者被踢出消费组、触发再均衡和重复投递。
+        // 和向量化心跳超时对齐：处理超过这个时间没进展，恢复任务也会接管
+        long maxPollIntervalMs = maxPollIntervalMs();
+        config.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, (int) maxPollIntervalMs);
         return new DefaultKafkaConsumerFactory<>(config);
+    }
+
+    long maxPollIntervalMs() {
+        long intervalMs = TimeUnit.SECONDS.toMillis(Math.max(reliabilityProperties.getVectorizationHeartbeatTimeoutSeconds(), 60L));
+        long worstParseMs = TimeUnit.SECONDS.toMillis(liteparseTimeoutSeconds + parsePermitTimeoutSeconds);
+        if (worstParseMs >= intervalMs) {
+            logger.warn("max.poll.interval.ms={}ms 不大于最坏解析耗时（LiteParse {}s + 等待解析许可 {}s），超长文件可能触发再均衡",
+                    intervalMs, liteparseTimeoutSeconds, parsePermitTimeoutSeconds);
+        }
+        return intervalMs;
     }
 
     // 带自动重试和死信队列的监听器工厂

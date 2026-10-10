@@ -9,11 +9,13 @@ import com.yizhaoqi.smartpai.config.ModelCallProperties;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
 import com.yizhaoqi.smartpai.service.RateLimitService;
 import com.yizhaoqi.smartpai.service.UsageQuotaService;
+import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Mono;
 
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
@@ -159,18 +161,22 @@ public class EmbeddingClient {
 
         // 查询向量是在线问答链路，上传向量化是后台任务，QPS 紧张时让位
         ModelCallPriority priority = usageType == UsageType.QUERY ? ModelCallPriority.ONLINE : ModelCallPriority.BACKGROUND;
-        return modelCallGuard.guardMono(
+        // 问答请求里查询向量的单次超时和整体等待都不超过请求剩余时间（含重试）
+        Duration attemptTimeout = RequestDeadline.cap(
+                Duration.ofSeconds(Math.max(modelCallProperties.getTimeout().getEmbeddingSeconds(), 1L)));
+        Mono<String> call = modelCallGuard.guardMono(
                 ModelCallGuard.SCOPE_EMBEDDING,
                 provider.provider(),
                 priority,
-                Duration.ofSeconds(Math.max(modelCallProperties.getTimeout().getEmbeddingSeconds(), 1L)),
+                attemptTimeout,
                 () -> webClientFactory.clientFor(ModelCallGuard.SCOPE_EMBEDDING, provider)
                         .post()
                         .uri("/embeddings")
                         .bodyValue(requestBody)
                         .retrieve()
                         .bodyToMono(String.class)
-        ).block();
+        );
+        return RequestDeadline.remaining().map(call::block).orElseGet(call::block);
     }
 
     private EmbeddingApiResponse parseEmbeddingResponse(String response, List<String> inputTexts) throws Exception {

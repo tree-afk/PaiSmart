@@ -19,12 +19,14 @@ import com.yizhaoqi.smartpai.repository.UserRepository;
 import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.service.search.RrfFusion;
+import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -138,7 +140,9 @@ public class HybridSearchService {
                 CompletableFuture.supplyAsync(() -> recall(buildBm25Request(query, filter, window)), recallExecutor);
         CompletableFuture<List<Hit<EsDocument>>> knnFuture =
                 CompletableFuture.supplyAsync(() -> recall(buildKnnRequest(queryVector, filter, window)), recallExecutor);
-        CompletableFuture.allOf(bm25Future, knnFuture).get(properties.getRecallTimeoutSeconds(), TimeUnit.SECONDS);
+        // 等待时间取召回超时配置和问答请求剩余时间中较小的值
+        Duration recallTimeout = RequestDeadline.cap(Duration.ofSeconds(properties.getRecallTimeoutSeconds()));
+        CompletableFuture.allOf(bm25Future, knnFuture).get(recallTimeout.toMillis(), TimeUnit.MILLISECONDS);
         List<Hit<EsDocument>> bm25Hits = bm25Future.join();
         List<Hit<EsDocument>> knnHits = knnFuture.join();
 
@@ -163,6 +167,10 @@ public class HybridSearchService {
             return new ArrayList<>();
         }
         if (!cfg.isEnabled()) {
+            return rrfTopK(candidates, topK);
+        }
+        if (!RequestDeadline.hasAtLeast(Duration.ofMillis(cfg.getSkipBelowMillis()))) {
+            logger.info("问答请求剩余时间不足 {}ms，跳过 rerank，按 RRF 顺序返回", cfg.getSkipBelowMillis());
             return rrfTopK(candidates, topK);
         }
 

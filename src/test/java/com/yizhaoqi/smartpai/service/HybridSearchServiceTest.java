@@ -16,9 +16,11 @@ import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.repository.UserRepository;
+import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -125,6 +127,20 @@ class HybridSearchServiceTest {
         assertEquals(1.0 / 62 + 1.0 / 61, results.get(0).getScore(), 1e-12);
         assertTrue(results.stream().allMatch(r -> "HYBRID_RRF".equals(r.getRetrievalMode())),
                 "RRF 分数与 rerank 分数量纲不同，单独标记检索模式");
+    }
+
+    @Test
+    void rerankIsSkippedWhenRequestDeadlineIsAlmostUsedUp() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(new RerankClient.RerankHit(0, 0.99)));
+
+        List<SearchResult> results;
+        try (RequestDeadline.Scope ignored = RequestDeadline.open(RequestDeadline.after(Duration.ofMillis(1500)))) {
+            results = service.searchWithPermission("q", "7", 2);
+        }
+
+        verify(rerankClient, never()).rerank(anyString(), anyList());
+        assertEquals(List.of(2, 1), results.stream().map(SearchResult::getChunkId).toList());
+        assertTrue(results.stream().allMatch(r -> "HYBRID_RRF".equals(r.getRetrievalMode())));
     }
 
     @Test

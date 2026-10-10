@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.config.HybridSearchProperties;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
+import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -69,7 +70,7 @@ public class RerankClient {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .block(Duration.ofSeconds(cfg.getTimeoutSeconds()));
+                .block(RequestDeadline.cap(Duration.ofSeconds(cfg.getTimeoutSeconds())));
 
         List<RerankHit> hits = parseResponse(response, documents.size());
         logger.debug("rerank 完成: model={}, candidates={}, costMs={}", cfg.getModel(), documents.size(),

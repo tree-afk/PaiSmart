@@ -317,6 +317,15 @@ eval:
     # 可比较的用例（评委和人工都给了结论）少于该数量时只提示样本不足，不下结论
     min-comparable-cases: ${EVAL_HUMAN_AGREEMENT_MIN_CASES:5}
 
+chat:
+  # 问答请求级截止时间：从收到消息开始计时，ReAct 循环、检索、重排序共用这一个预算，每一步超时取自身配置和剩余时间的较小值
+  deadline:
+    total-seconds: ${CHAT_DEADLINE_TOTAL_SECONDS:120}
+    # 给最终回答预留的时间，工具执行不能占用这一段
+    final-answer-reserve-seconds: ${CHAT_DEADLINE_FINAL_ANSWER_RESERVE_SECONDS:30}
+    # 剩余时间不够"一轮工具调用 + 最终回答预留"时，不再调用工具，直接让模型回答
+    min-tool-round-seconds: ${CHAT_DEADLINE_MIN_TOOL_ROUND_SECONDS:15}
+
 search:
   hybrid:
     # BM25 与 KNN 两路并行召回，每路窗口 = topK * recall-multiplier（不超过 max-recall-window）
@@ -338,6 +347,8 @@ search:
       score-threshold: ${SEARCH_RERANK_SCORE_THRESHOLD:0.2}
       max-document-chars: ${SEARCH_RERANK_MAX_DOCUMENT_CHARS:2000}
       timeout-seconds: ${SEARCH_RERANK_TIMEOUT_SECONDS:10}
+      # 问答请求剩余时间低于该值时跳过 rerank，直接用 RRF 结果
+      skip-below-millis: ${SEARCH_RERANK_SKIP_BELOW_MILLIS:2000}
   # 父子检索（small-to-big）：检索仍在小分块上做，命中后把分块连同同一文件前后相邻的分块交给模型；
   # 引用、页码和证据片段仍指向命中的小分块，多个命中落在同一个父块里时父块只发一次
   parent-context:

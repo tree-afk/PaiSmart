@@ -19,7 +19,7 @@ class ChatHandlerReferenceNumberingTest {
     void multipleSearchesKeepEarlierReferencesAndUseDistinctNumbers() {
         ChatGenerationStateService state = mock(ChatGenerationStateService.class);
         ChatHandler handler = new ChatHandler(null, null, null, null, null, state,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
         SearchResult first = new SearchResult("first-md5", 1, "first text", 0.9, "first.txt");
         SearchResult second = new SearchResult("second-md5", 2, "second text", 0.8, "second.txt");
 
@@ -39,7 +39,7 @@ class ChatHandlerReferenceNumberingTest {
     void sharedParentBlockIsSentOnceButEachReferenceKeepsItsSmallChunk() {
         ChatGenerationStateService state = mock(ChatGenerationStateService.class);
         ChatHandler handler = new ChatHandler(null, null, null, null, null, state,
-                null, null, null, null, null);
+                null, null, null, null, null, null);
         String parent = "端口配置为 8080。\n\n修改端口后需要重启服务。";
         SearchResult first = new SearchResult("md5", 3, "端口配置为 8080。", 0.9, "7", "org", false, "manual.pdf",
                 2, "端口配置为 8080。", "HYBRID", null).withParentContext(parent, "md5#3-4");
