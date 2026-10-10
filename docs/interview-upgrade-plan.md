@@ -111,7 +111,8 @@
     - ES 双路召回的等待、查询向量的单次超时和整体等待、重排序超时都取自身配置和剩余时间的较小值；剩余时间低于 `search.hybrid.rerank.skip-below-millis`（默认 2 秒）时跳过重排序，直接按 RRF 返回
     - 从第二轮起，剩余时间不够"一轮工具调用（默认 15 秒）+ 最终回答预留"时，复用那条"不要再调用工具，直接回答"的消息提前收尾。第一轮总是带工具：知识库优先，至少要检索一次（一开始实现成第一轮也检查，本地用 40 秒预算实测时模型一次没检索就回答"暂无相关材料"，所以改掉）
     - 验证：`ChatHandlerDeadlineTest` 走真实 `processMessage` → `LlmProviderRouter` → 本地 HTTP 模型服务，断言时间够时第二轮仍带工具、不够时第二轮不带工具并带收尾消息；`HybridSearchServiceTest` 断言剩余 1.5 秒时不调用重排序；本地后端用 40 秒预算实测：第一轮检索、第二轮提前收尾，7.5 秒给出带引用的回答；默认 120 秒预算下 9.2 秒正常回答
-    - 未覆盖：`generate_summary` 工具里 `DeepSeekClient` 的摘要流仍按自身超时，它的输出直接流给用户、作为最终回答，没有接入请求截止时间- [x] **显式配置 Kafka 拉取参数**（文章 06 题）
+    - 未覆盖：`generate_summary` 工具里 `DeepSeekClient` 的摘要流仍按自身超时，它的输出直接流给用户、作为最终回答，没有接入请求截止时间
+- [x] **显式配置 Kafka 拉取参数**（文章 06 题）
   - 现状：`config/KafkaConfig.java:110-120` 没有设置 `max.poll.records` 和 `max.poll.interval.ms`，用的是客户端默认值（500 条、5 分钟）；LiteParse 单个文件最长 300 秒，再加上信号量最多等 120 秒，一条消息的处理时间可能超过 5 分钟，触发再均衡和重复消费（有租约认领兜底，但会白白浪费一次解析）
   - 目标：`max.poll.records=1`；`max.poll.interval.ms` 大于最长处理时间，建议和心跳超时 `file.processing.reliability` 的 10 分钟对齐
   - 完成：`KafkaConfig.consumerFactory` 设置 `max.poll.records=1`，`max.poll.interval.ms` 直接取 `file.processing.reliability.vectorization-heartbeat-timeout-seconds`（默认 10 分钟），两者改一处就同步；启动时如果 LiteParse 超时 + 等待解析许可（默认 300 + 120 秒）不小于这个间隔会打 WARN。`KafkaConsumerSettingsTest` 断言配置值，本地后端用新配置正常启动和消费（Kafka 客户端的配置打印被 logback 里 `org.apache.kafka` 的 WARN 级别屏蔽，没能从日志里直接看到生效值）
