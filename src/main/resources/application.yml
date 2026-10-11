@@ -343,8 +343,9 @@ search:
       # 为空时复用阿里云 embedding provider 的 API Key
       api-key: ${SEARCH_RERANK_API_KEY:}
       max-candidates: ${SEARCH_RERANK_MAX_CANDIDATES:50}
-      # 低于该分数的候选直接丢弃，topK 只是上限；建议用评测集调参
-      score-threshold: ${SEARCH_RERANK_SCORE_THRESHOLD:0.2}
+      # 低于该分数的候选直接丢弃，topK 只是上限；建议用评测集调参。
+      # 评测集 paismart-eval-v1 上 gte-rerank-v2 给口语化提问的正确分块只打 0.14~0.19 分，0.2 会把它们全部过滤掉
+      score-threshold: ${SEARCH_RERANK_SCORE_THRESHOLD:0.1}
       max-document-chars: ${SEARCH_RERANK_MAX_DOCUMENT_CHARS:2000}
       timeout-seconds: ${SEARCH_RERANK_TIMEOUT_SECONDS:10}
       # 问答请求剩余时间低于该值时跳过 rerank，直接用 RRF 结果

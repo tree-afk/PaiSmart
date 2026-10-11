@@ -467,7 +467,7 @@ private List<SearchResult> rerankAndTruncate(String query, List<RrfFusion.Fused<
 
 单独标 `HYBRID_RRF` 是因为两种分数完全不能比。rerank 分数是 0 到 1 的相关性，RRF 分数最大也就 2/61 约 0.033。如果都标成 `HYBRID`，监控里看平均分会突然掉到 0.03，评测报告里也分不清这次到底有没有走 rerank。离线评测会记录检索模式（`HYBRID` / `HYBRID_RRF` / `TEXT_ONLY`），就是为了把这几种情况分开统计。
 
-还有一个细节：降级到 RRF 时只按 topK 截断，不做阈值过滤，因为 0.2 这个阈值是给 rerank 分数定的，套到 RRF 分数上会把所有结果都过滤掉。反过来，rerank 成功时是“先过阈值再截 topK”，topK 只是上限，噪声多的时候返回的条数可能少于 topK，甚至一条都没有，这是有意为之，宁可告诉模型“没搜到”也不塞噪声进去。
+还有一个细节：降级到 RRF 时只按 topK 截断，不做阈值过滤，因为 0.1 这个阈值是给 rerank 分数定的，套到 RRF 分数上会把所有结果都过滤掉。反过来，rerank 成功时是“先过阈值再截 topK”，topK 只是上限，噪声多的时候返回的条数可能少于 topK，甚至一条都没有，这是有意为之，宁可告诉模型“没搜到”也不塞噪声进去。
 
 #### Q5: 如果 BM25 和 KNN 有一路超时或者报错，现在会怎样？你觉得合理吗，要改的话怎么改？
 
@@ -505,7 +505,7 @@ CompletableFuture.allOf(bm25Future, knnFuture).get(recallTimeout.toMillis(), Tim
 (4) 模式标记也要细一点，比如 `HYBRID_BM25_ONLY`、`HYBRID_KNN_ONLY`，否则监控上看不出是哪一路在出问题。
 
 ### 延伸问题
-- rerank 阈值 0.2 是怎么来的？换了 rerank 模型以后阈值要不要重新定？（提示：分数分布跟模型有关，要用离线评测的 Recall@K 和 MRR 重新扫一遍阈值）
+- rerank 阈值为什么从 0.2 降到 0.1？换了 rerank 模型以后阈值要不要重新定？（提示：评测集上口语化提问的正确分块只拿到 0.14~0.19 分，0.2 时 8 道同义改写题全部返回 0 条，Recall@5 只有 78.3%，降到 0.1 后回到 100%；分数分布跟模型有关，换模型要用离线评测重新扫一遍阈值）
 - 为什么 rerank 送进去的文本要和 embedding、BM25 用同一个“说明 + 原文”的拼法？只送原文会有什么问题？
 - `RerankClient` 每次调用都 `WebClient.builder()...build()` 新建一个客户端，没有走共享连接池（升级计划里记录的遗留项），高并发下会有什么问题，怎么改？
 - 如果业务上希望关键词命中的权重更高一点，RRF 能不能加权？加权 RRF 和分数加权相比好在哪里？

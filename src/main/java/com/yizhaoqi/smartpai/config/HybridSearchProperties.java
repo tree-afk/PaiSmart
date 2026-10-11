@@ -38,7 +38,7 @@ public class HybridSearchProperties {
         /** 只对 RRF 融合后的前 N 条候选做精排 */
         private int maxCandidates = 50;
         /** rerank 相关性分数低于该阈值的候选直接丢弃 */
-        private double scoreThreshold = 0.2;
+        private double scoreThreshold = 0.1;
         /** 单个候选送入 rerank 的最大字符数 */
         private int maxDocumentChars = 2000;
         private int timeoutSeconds = 10;
