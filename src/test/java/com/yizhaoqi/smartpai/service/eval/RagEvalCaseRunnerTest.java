@@ -43,6 +43,9 @@ class RagEvalCaseRunnerTest {
     private final HumanReviewSampler noSampling = new HumanReviewSampler(0d, new Random(1));
     private final List<List<Map<String, Object>>> llmCalls = new ArrayList<>();
     private final List<String> llmReplies = new ArrayList<>();
+    /** 与 llmReplies 一一对应，为空时按 stop 处理 */
+    private final List<String> llmFinishReasons = new ArrayList<>();
+    private final List<Integer> llmMaxTokens = new ArrayList<>();
     private RagEvalCaseRunner runner;
 
     @BeforeEach
@@ -55,11 +58,13 @@ class RagEvalCaseRunnerTest {
         when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND))).thenAnswer(invocation -> {
             List<Map<String, Object>> messages = invocation.getArgument(1);
             llmCalls.add(messages);
+            llmMaxTokens.add(invocation.getArgument(3));
             String reply = llmReplies.remove(0);
+            String finishReason = llmFinishReasons.isEmpty() ? "stop" : llmFinishReasons.remove(0);
             if (reply == null) {
                 throw new RuntimeException("upstream 500");
             }
-            return new LlmProviderRouter.ReActTurn(reply, List.of(), Map.of(), "stop", 1, 1);
+            return new LlmProviderRouter.ReActTurn(reply, List.of(), Map.of(), finishReason, 1, 1);
         });
     }
 
@@ -154,6 +159,44 @@ class RagEvalCaseRunnerTest {
         assertEquals(1, llmCalls.size());
         assertTrue(result.error().contains("upstream 500"));
         assertFalse(result.needsHumanReview());
+    }
+
+    @Test
+    void judgeTruncatedByReasoningIsRetriedWithDoubledBudget() {
+        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        llmReplies.addAll(List.of("端口是 8080", "", "{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}"));
+        llmFinishReasons.addAll(List.of("stop", "length", "stop"));
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
+
+        assertEquals(EvalDiagnosis.OK, result.diagnosis());
+        assertEquals(List.of(4000, 2000, 4000), llmMaxTokens);
+    }
+
+    @Test
+    void emptyAnswerAfterRetryFailsWithFinishReasonAndCappedBudget() {
+        properties.setMaxRetryTokens(6000);
+        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        llmReplies.addAll(List.of("", " "));
+        llmFinishReasons.addAll(List.of("length", "length"));
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
+
+        assertEquals(EvalDiagnosis.GENERATION_FAILED, result.diagnosis());
+        assertTrue(result.error().contains("finish_reason=length"));
+        assertEquals(List.of(4000, 6000), llmMaxTokens, "重试预算翻倍但不超过 max-retry-tokens");
+    }
+
+    @Test
+    void emptyOutputNotCausedByLengthRetriesWithSameBudget() {
+        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        llmReplies.addAll(List.of("端口是 8080", "", ""));
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
+
+        assertEquals(EvalDiagnosis.JUDGE_FAILED, result.diagnosis());
+        assertTrue(result.error().contains("评委输出为空（finish_reason=stop）"));
+        assertEquals(List.of(4000, 2000, 2000), llmMaxTokens);
     }
 
     @Test

@@ -59,6 +59,28 @@ class RetrievalMetricsTest {
         assertTrue(RetrievalMetrics.isRelevant(results.get(2), evalCase));
     }
 
+    @Test
+    void evidenceNarrowsRelevanceToChunksContainingPhrase() {
+        List<SearchResult> chunks = List.of(
+                new SearchResult("m1", 18, "MySQL 8.0 + Spring Data JPA", 0.9, "a.pdf"),
+                new SearchResult("m1", 20, "● UI组件 : Naive UI\n● 状态管理 : Pinia", 0.8, "a.pdf"));
+        EvalCase evalCase = new EvalCase("1", "q", List.of(), List.of("a.pdf"), "r", List.of("naive ui", "Pinia"));
+
+        assertEquals(2, RetrievalMetrics.firstRelevantRank(chunks, evalCase, 5));
+        assertEquals(0, RetrievalMetrics.firstRelevantRank(chunks, evalCase, 1), "只召回了同文件的其他分块不算命中");
+        assertTrue(RetrievalMetrics.docHit(chunks, evalCase, 1), "文件级口径仍算命中");
+        assertFalse(RetrievalMetrics.isRelevant(chunks.get(0), evalCase));
+    }
+
+    @Test
+    void evidenceMatchingNormalizesKangxiRadicalsAndWhitespace() {
+        // PDF 抽取出的“⼤⽂件”用的是康熙部首 U+2F24 / U+2F42，还夹着换行
+        SearchResult chunk = new SearchResult("m1", 1, "⽀持⼤⽂件的断点续传和分⽚\n上传", 0.9, "a.pdf");
+        EvalCase evalCase = new EvalCase("1", "q", List.of("m1"), List.of(), "r", List.of("分片 上传"));
+
+        assertTrue(RetrievalMetrics.isRelevant(chunk, evalCase));
+    }
+
     private static SearchResult result(String md5, String fileName) {
         return new SearchResult(md5, 1, "text", 0.9, fileName);
     }

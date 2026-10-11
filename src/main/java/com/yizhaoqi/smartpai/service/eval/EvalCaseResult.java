@@ -11,10 +11,14 @@ public record EvalCaseResult(
         String referenceAnswer,
         List<String> expectedFileMd5s,
         List<String> expectedFileNames,
+        List<String> expectedEvidence,
         /* 检索 */
         String retrievalMode,
         List<RetrievedChunk> retrieved,
+        /* 标注了 expectedEvidence 时按分块判断，否则按文件判断 */
         Boolean retrievalHit,
+        /* 只按文件判断的命中，用来和分块级命中对比 */
+        Boolean docHit,
         Integer firstRelevantRank,
         Double reciprocalRank,
         Double expectedDocCoverage,

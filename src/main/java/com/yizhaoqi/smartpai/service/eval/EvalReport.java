@@ -29,6 +29,10 @@ public record EvalReport(
             int retrievalHits,
             Double recallAtK,
             Double mrr,
+            /* 只按文件判断的 Recall@K；evidenceLabeledCases 为 0 时与 recallAtK 相同 */
+            Double docRecallAtK,
+            /* 标注了 expectedEvidence、按分块判断命中的用例数 */
+            int evidenceLabeledCases,
             Double meanExpectedDocCoverage,
             int judgedCases,
             int correctCases,

@@ -55,7 +55,7 @@ class EvalHumanReviewServiceTest {
             Boolean correct = i == 5 ? null : i != 3;
             Integer score = i == 5 ? null : (i == 3 ? 2 : 5);
             when(caseRunner.run(org.mockito.ArgumentMatchers.eq(evalCase), anyString(), anyInt(), any())).thenReturn(
-                    new EvalCaseResult("c" + i, "q" + i, "ref", List.of(), List.of(), "HYBRID", List.of(), null, null,
+                    new EvalCaseResult("c" + i, "q" + i, "ref", List.of(), List.of(), List.of(), "HYBRID", List.of(), null, null, null,
                             null, null, "answer", score, correct, "", null, EvalDiagnosis.NOT_LABELED, i == 5, null, null, 1L));
         }
         runId = evalService.start(cases, "inline", 3, "calib", "7", "admin").runId();

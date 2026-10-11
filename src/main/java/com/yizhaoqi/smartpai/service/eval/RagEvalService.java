@@ -277,6 +277,9 @@ public class RagEvalService {
     private Map<String, Object> configSnapshot(int topK) {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("topK", topK);
+        config.put("llm", caseRunner.primaryLlmDescription());
+        config.put("generationMaxTokens", properties.getGenerationMaxTokens());
+        config.put("judgeMaxTokens", properties.getJudgeMaxTokens());
         config.put("rerankEnabled", searchProperties.getRerank().isEnabled());
         config.put("rerankModel", searchProperties.getRerank().getModel());
         config.put("rerankScoreThreshold", searchProperties.getRerank().getScoreThreshold());

@@ -50,7 +50,7 @@ class RagEvalServiceTest {
     void runWritesJsonReportWithLabelAndSummary() throws Exception {
         EvalCase evalCase = new EvalCase("c1", "q", List.of("m1"), List.of(), "ref");
         when(caseRunner.run(eq(evalCase), eq("7"), anyInt(), any())).thenReturn(new EvalCaseResult(
-                "c1", "q", "ref", List.of("m1"), List.of(), "HYBRID", List.of(), true, 1, 1.0, 1.0,
+                "c1", "q", "ref", List.of("m1"), List.of(), List.of(), "HYBRID", List.of(), true, true, 1, 1.0, 1.0,
                 "answer", 4, true, "ok", null, EvalDiagnosis.OK, false, null, null, 12L));
 
         RagEvalService.RunStatus submitted = service.start(List.of(evalCase), "classpath:eval/sample-eval.jsonl", 3,
@@ -78,7 +78,7 @@ class RagEvalServiceTest {
     void reportPathIsFoundOnDiskAfterRunStateIsGone() throws Exception {
         EvalCase evalCase = new EvalCase("c1", "q", List.of(), List.of(), "ref");
         when(caseRunner.run(eq(evalCase), eq("7"), anyInt(), any())).thenReturn(new EvalCaseResult(
-                "c1", "q", "ref", List.of(), List.of(), "HYBRID", List.of(), null, null, null, null,
+                "c1", "q", "ref", List.of(), List.of(), List.of(), "HYBRID", List.of(), null, null, null, null, null,
                 "answer", 4, true, "ok", null, EvalDiagnosis.NOT_LABELED, false, null, null, 12L));
         String runId = service.start(List.of(evalCase), "inline", 3, "l", "7", "admin").runId();
 

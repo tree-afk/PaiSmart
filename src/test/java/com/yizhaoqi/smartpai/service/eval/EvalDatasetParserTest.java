@@ -66,4 +66,28 @@ class EvalDatasetParserTest {
             assertTrue(cases.stream().allMatch(EvalCase::hasExpectedDocs));
         }
     }
+
+    @Test
+    void parsesExpectedEvidenceAsListOrSingleString() throws Exception {
+        String jsonl = """
+                {"question": "q1", "expectedFileNames": ["a.pdf"], "expectedEvidence": ["Naive UI", " "], "referenceAnswer": "a"}
+                {"question": "q2", "expectedFileNames": ["a.pdf"], "expectedEvidence": "Pinia", "referenceAnswer": "a"}
+                {"question": "q3", "expectedEvidence": ["无期望文档时证据不生效"], "referenceAnswer": "a"}
+                """;
+        List<EvalCase> cases = EvalDatasetParser.parse(new StringReader(jsonl), objectMapper, 10);
+
+        assertEquals(List.of("Naive UI"), cases.get(0).expectedEvidence());
+        assertEquals(List.of("Pinia"), cases.get(1).expectedEvidence());
+        assertTrue(cases.get(0).hasExpectedEvidence());
+        assertFalse(cases.get(2).hasExpectedEvidence());
+    }
+
+    @Test
+    void bundledPaismartDatasetHasEvidenceForEveryLabeledCase() throws Exception {
+        try (var in = getClass().getResourceAsStream("/eval/paismart-eval-v1.jsonl")) {
+            List<EvalCase> cases = EvalDatasetParser.parse(new InputStreamReader(in, StandardCharsets.UTF_8), objectMapper, 100);
+            assertEquals(50, cases.size());
+            assertTrue(cases.stream().filter(EvalCase::hasExpectedDocs).allMatch(EvalCase::hasExpectedEvidence));
+        }
+    }
 }

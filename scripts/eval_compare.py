@@ -23,6 +23,9 @@ def by_type(report):
         out[t] = {
             "n": len(cases),
             "recall": sum(c["retrievalHit"] for c in labeled) / len(labeled) if labeled else None,
+            # 旧报告没有 docHit 字段（只有文件级口径）
+            "doc_recall": (sum(bool(c["docHit"]) for c in labeled) / len(labeled)
+                           if labeled and all("docHit" in c for c in labeled) else None),
             "mrr": sum(c["reciprocalRank"] or 0 for c in labeled) / len(labeled) if labeled else None,
             "empty": sum(1 for c in cases if not c["retrieved"]),
             "judged": len(judged),
@@ -43,22 +46,25 @@ def main(paths):
     reports = [json.load(open(p, encoding="utf-8")) for p in paths]
     for r in reports:
         s = r["summary"]
-        print(f"== {r['label']} (rerank 阈值 {r['config']['rerankScoreThreshold']}, topK {r['topK']}) ==")
-        print(f"   Recall@K {fmt(s['recallAtK'])}  MRR {fmt(s['mrr'], False)}  评委准确率 {fmt(s['accuracy'])}"
+        print(f"== {r['label']} (rerank 阈值 {r['config']['rerankScoreThreshold']}, topK {r['topK']}, "
+              f"模型 {r['config'].get('llm', '-')}) ==")
+        print(f"   Recall@K {fmt(s['recallAtK'])}  文件级 Recall {fmt(s.get('docRecallAtK'))}"
+              f"  MRR {fmt(s['mrr'], False)}  评委准确率 {fmt(s['accuracy'])}"
               f"  平均分 {fmt(s['meanJudgeScore'], False)}  失败 {s['failedCases']}  检索模式 {s['retrievalModeCounts']}")
         print(f"   归因 {s['diagnosisCounts']}")
     print()
-    print("题型      | " + " | ".join(f"{r['label']:^44}" for r in reports))
-    print("          | " + " | ".join(f"{'Recall':>7} {'MRR':>5} {'空':>3} {'准确率':>7} {'均分':>5} {'失败':>3}" for _ in reports))
+    print("题型      | " + " | ".join(f"{r['label']:^52}" for r in reports))
+    print("          | " + " | ".join(f"{'Recall':>7} {'文件级':>7} {'MRR':>5} {'空':>3} {'准确率':>7} {'均分':>5} {'失败':>3}"
+                                       for _ in reports))
     tables = [by_type(r) for r in reports]
     for t in TYPES + ["ALL"]:
         cells = []
         for tab in tables:
             row = tab.get(t)
             if row is None:
-                cells.append(" " * 44)
+                cells.append(" " * 52)
                 continue
-            cells.append(f"{fmt(row['recall']):>7} {fmt(row['mrr'], False):>5} {row['empty']:>3} "
+            cells.append(f"{fmt(row['recall']):>7} {fmt(row['doc_recall']):>7} {fmt(row['mrr'], False):>5} {row['empty']:>3} "
                          f"{fmt(row['acc']):>7} {fmt(row['score'], False):>5} {row['failed']:>3}")
         n = tables[0].get(t, {}).get("n", 0)
         print(f"{t:<6}({n:>2}) | " + " | ".join(cells))

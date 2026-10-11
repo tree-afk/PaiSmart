@@ -24,10 +24,12 @@ public class RagEvalProperties {
     private int maxTopK = 20;
     /** 单次评测最多用例数 */
     private int maxCases = 500;
-    /** 生成回答的最大输出 tokens */
-    private int generationMaxTokens = 1500;
-    /** 评委模型的最大输出 tokens */
-    private int judgeMaxTokens = 300;
+    /** 生成回答的最大输出 tokens；推理模型的思考过程也计入这个预算，给小了会只思考不输出 */
+    private int generationMaxTokens = 4000;
+    /** 评委模型的最大输出 tokens，同样要给思考过程留出余量 */
+    private int judgeMaxTokens = 2000;
+    /** 输出为空且因长度截断时，重试把预算翻倍，但不超过该值 */
+    private int maxRetryTokens = 8000;
     private int generationTimeoutSeconds = 90;
     private int judgeTimeoutSeconds = 60;
     /** 送给评委的每条检索证据最大字符数 */

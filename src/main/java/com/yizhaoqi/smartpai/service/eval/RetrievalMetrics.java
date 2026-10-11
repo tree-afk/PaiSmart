@@ -2,6 +2,7 @@ package com.yizhaoqi.smartpai.service.eval;
 
 import com.yizhaoqi.smartpai.entity.SearchResult;
 
+import java.text.Normalizer;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -10,10 +11,12 @@ import java.util.stream.Collectors;
 
 /**
  * 检索指标：
- * - Recall@K（本项目口径）：前 K 条结果里只要出现任一期望文档即记为命中，数据集上取命中率；
- * - 倒数排名 RR：第一条期望文档排在第 r 位时为 1/r，前 K 条都没有时为 0，数据集上取平均即 MRR；
+ * - Recall@K（本项目口径）：前 K 条结果里只要出现任一相关分块即记为命中，数据集上取命中率；
+ * - 倒数排名 RR：第一条相关分块排在第 r 位时为 1/r，前 K 条都没有时为 0，数据集上取平均即 MRR；
  * - 期望文档覆盖率：前 K 条覆盖了多少比例的期望文档（一道题需要多篇文档时参考）。
  * 期望文档优先按 MD5 匹配，其次按文件名（忽略大小写）匹配。
+ * 用例标注了 expectedEvidence 时，相关分块还要求分块文本包含其中任意一个短语（分块级）；
+ * 否则同一文件的任何分块都算相关（文件级）。文件级命中另外单独记录，用来对比两种口径的差距。
  */
 public final class RetrievalMetrics {
 
@@ -26,13 +29,30 @@ public final class RetrievalMetrics {
     public static int firstRelevantRank(List<SearchResult> results, EvalCase evalCase, int k) {
         Set<String> md5s = lower(evalCase.expectedFileMd5s());
         Set<String> names = lower(evalCase.expectedFileNames());
-        int limit = Math.min(results == null ? 0 : results.size(), Math.max(k, 0));
+        List<String> evidence = normalizedEvidence(evalCase);
+        int limit = limit(results, k);
         for (int i = 0; i < limit; i++) {
-            if (isRelevant(results.get(i), md5s, names)) {
+            SearchResult result = results.get(i);
+            if (isDocRelevant(result, md5s, names) && containsEvidence(result, evidence)) {
                 return i + 1;
             }
         }
         return 0;
+    }
+
+    /**
+     * 只按文件判断的命中：前 K 条里出现任一期望文件的分块即算命中
+     */
+    public static boolean docHit(List<SearchResult> results, EvalCase evalCase, int k) {
+        Set<String> md5s = lower(evalCase.expectedFileMd5s());
+        Set<String> names = lower(evalCase.expectedFileNames());
+        int limit = limit(results, k);
+        for (int i = 0; i < limit; i++) {
+            if (isDocRelevant(results.get(i), md5s, names)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static double reciprocalRank(int rank) {
@@ -47,7 +67,7 @@ public final class RetrievalMetrics {
         if (expectedCount == 0) {
             return 0d;
         }
-        List<SearchResult> top = results == null ? List.of() : results.subList(0, Math.min(results.size(), Math.max(k, 0)));
+        List<SearchResult> top = results == null ? List.of() : results.subList(0, limit(results, k));
         Set<String> retrievedMd5s = top.stream().map(SearchResult::getFileMd5).map(RetrievalMetrics::lower).collect(Collectors.toSet());
         Set<String> retrievedNames = top.stream().map(SearchResult::getFileName).map(RetrievalMetrics::lower).collect(Collectors.toSet());
         long covered = evalCase.expectedFileMd5s().stream().map(RetrievalMetrics::lower).filter(retrievedMd5s::contains).count()
@@ -55,14 +75,44 @@ public final class RetrievalMetrics {
         return (double) covered / expectedCount;
     }
 
-    static boolean isRelevant(SearchResult result, Set<String> expectedMd5s, Set<String> expectedNames) {
+    public static boolean isRelevant(SearchResult result, EvalCase evalCase) {
+        return isDocRelevant(result, lower(evalCase.expectedFileMd5s()), lower(evalCase.expectedFileNames()))
+                && containsEvidence(result, normalizedEvidence(evalCase));
+    }
+
+    static boolean isDocRelevant(SearchResult result, Set<String> expectedMd5s, Set<String> expectedNames) {
         String md5 = lower(result.getFileMd5());
         String name = lower(result.getFileName());
         return (md5 != null && expectedMd5s.contains(md5)) || (name != null && expectedNames.contains(name));
     }
 
-    public static boolean isRelevant(SearchResult result, EvalCase evalCase) {
-        return isRelevant(result, lower(evalCase.expectedFileMd5s()), lower(evalCase.expectedFileNames()));
+    private static boolean containsEvidence(SearchResult result, List<String> evidence) {
+        if (evidence.isEmpty()) {
+            return true;
+        }
+        String text = normalizeText(result.getTextContent());
+        return evidence.stream().anyMatch(text::contains);
+    }
+
+    private static List<String> normalizedEvidence(EvalCase evalCase) {
+        return evalCase.expectedEvidence().stream()
+                .map(RetrievalMetrics::normalizeText)
+                .filter(phrase -> !phrase.isEmpty())
+                .toList();
+    }
+
+    /**
+     * NFKC 把 PDF 抽取出的康熙部首（如 ⼤）、全角字符还原成常规字符，再去掉空白、统一小写，避免排版差异导致匹配不上
+     */
+    static String normalizeText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return Normalizer.normalize(text, Normalizer.Form.NFKC).replaceAll("\\s+", "").toLowerCase(Locale.ROOT);
+    }
+
+    private static int limit(List<SearchResult> results, int k) {
+        return Math.min(results == null ? 0 : results.size(), Math.max(k, 0));
     }
 
     private static Set<String> lower(List<String> values) {

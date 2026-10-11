@@ -204,10 +204,12 @@ frontend/
 
 评测把检索和生成分开看，回答错了能分清是没搜到，还是搜到了没用对。
 
-- 数据集为 JSONL，每行一个用例：`{"question": "...", "expectedFileMd5s": ["..."], "expectedFileNames": ["..."], "referenceAnswer": "..."}`，期望文档 MD5 和文件名至少填一个才计算检索指标。示例见 `src/main/resources/eval/sample-eval.jsonl`（针对启动时导入的 `docs/paismart.pdf`）。
-- 检索以发起评测的管理员身份调用线上同一条混合检索链路，计算 Recall@K（前 K 条里出现任一期望文档即命中）和 MRR，并记录检索模式（`HYBRID` / `HYBRID_RRF` / `TEXT_ONLY`）。
+- 数据集为 JSONL，每行一个用例：`{"question": "...", "expectedFileMd5s": ["..."], "expectedFileNames": ["..."], "expectedEvidence": ["..."], "referenceAnswer": "..."}`，期望文档 MD5 和文件名至少填一个才计算检索指标。`expectedEvidence` 可选，填答案分块里一定会出现的短语，命中分块包含任意一个才算相关（分块级）；不填时同一文件的任何分块都算命中（文件级），一份大文档里召回了不相干的分块也算对，Recall 会虚高。匹配前对分块和短语都做 NFKC 归一化并去掉空白，PDF 抽出的康熙部首（如 `⼤`）也能匹配。用短语而不是分块编号，是为了调整分块策略后标注依然有效。
+- 内置两份数据集：`sample-eval.jsonl` 是 5 条示例；`paismart-eval-v1.jsonl` 是 50 条正式测评集，覆盖单点事实、同义改写、多跳综合、资料冲突、私有文档、跨文档、无答案七类题型（id 前缀即题型），全部带分块级标注。`scripts/eval_compare.py` 按题型拆分报告，并把多份报告并排对比。
+- 检索以发起评测的管理员身份调用线上同一条混合检索链路，计算 Recall@K（前 K 条里出现任一相关分块即命中）、文件级 Recall（`docRecallAtK`，用来和分块级对比）和 MRR，并记录检索模式（`HYBRID` / `HYBRID_RRF` / `TEXT_ONLY`）。检索的问题向量化计入该管理员的 Embedding 查询限流（`embedding-query-request`），每日上限调得太低时检索会降级为 `TEXT_ONLY`，看报告的检索模式统计就能发现。
 - 生成沿用问答的提示词约定（`ai.prompt.rules` + 检索片段块），用非流式调用得到回答。
 - 另起一次 LLM 调用做评委，对照参考答案和检索证据输出 `{"score": 1-5, "correct": true/false, "reason": "..."}`。评委提示词把所有字段当作数据，不因回答更长而加分；输出解析失败的用例一律标记人工复核，另按 `eval.human-review-sample-rate` 随机抽样人工复核。
+- 推理模型的思考过程也计入 `max_tokens`，预算用完时回答为空；生成和评委输出为空时都会重试一次，因长度截断（`finish_reason=length`）的把预算翻倍。报告的 `config.llm` 记录本次用的主模型。
 - 报告给出 Recall@K、MRR、评委平均分、准确率和问题归因：`PROMPT_OR_MODEL`（检索命中但回答错，查提示词或模型），`RETRIEVAL_MISS`（检索未命中，查分块和检索），以及逐条明细。报告以 JSON 写入 `eval.output-dir`，文件名带 `label`，调整分块前后各跑一次、用不同 label 区分即可对比。
 
 | 配置项 | 默认值 | 说明 |
@@ -218,7 +220,8 @@ frontend/
 | `eval.random-seed` | 空 | 固定后两次评测抽到同一批用例 |
 | `eval.default-top-k` / `eval.max-top-k` | `5` / `20` | 检索条数 |
 | `eval.max-cases` | `500` | 单次评测最多用例数 |
-| `eval.generation-max-tokens` / `eval.judge-max-tokens` | `1500` / `300` | 生成和评委的最大输出 tokens |
+| `eval.generation-max-tokens` / `eval.judge-max-tokens` | `4000` / `2000` | 生成和评委的最大输出 tokens；推理模型的思考过程也计入，给小了会只思考不输出 |
+| `eval.max-retry-tokens` | `8000` | 输出为空时重试一次，因长度截断的把预算翻倍，但不超过该值 |
 | `eval.generation-timeout-seconds` / `eval.judge-timeout-seconds` | `90` / `60` | 生成和评委的超时 |
 | `eval.requester-id` | `system-eval` | 生成和评委调用的请求方，以 system 开头不占用户配额 |
 | `eval.human-agreement.min-agreement-rate` | `0.8` | 评委与人工一致率低于该值时告警（`EVAL_HUMAN_AGREEMENT_MIN_RATE`） |

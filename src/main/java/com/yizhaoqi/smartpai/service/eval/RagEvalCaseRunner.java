@@ -134,6 +134,7 @@ public class RagEvalCaseRunner {
         }
         int rank = RetrievalMetrics.firstRelevantRank(results, evalCase, topK);
         draft.retrievalHit = rank > 0;
+        draft.docHit = RetrievalMetrics.docHit(results, evalCase, topK);
         draft.firstRelevantRank = rank > 0 ? rank : null;
         draft.reciprocalRank = RetrievalMetrics.reciprocalRank(rank);
         draft.expectedDocCoverage = RetrievalMetrics.expectedDocCoverage(results, evalCase, topK);
@@ -145,12 +146,10 @@ public class RagEvalCaseRunner {
     String generate(String question, List<SearchResult> results) throws Exception {
         String context = results.isEmpty() ? "" : AgentToolRegistry.formatSearchResults(results);
         List<Map<String, Object>> messages = llmProviderRouter.buildRagMessages(question, context);
-        LlmProviderRouter.ReActTurn turn = callWithTimeout(
-                () -> llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
-                        properties.getGenerationMaxTokens(), ModelCallPriority.BACKGROUND),
-                properties.getGenerationTimeoutSeconds());
-        if (turn == null || turn.content() == null || turn.content().isBlank()) {
-            throw new IllegalStateException("模型返回空回答");
+        LlmProviderRouter.ReActTurn turn = completeAllowingOneRetry(messages, properties.getGenerationMaxTokens(),
+                properties.getGenerationTimeoutSeconds(), "生成");
+        if (isEmpty(turn)) {
+            throw new IllegalStateException("模型返回空回答（finish_reason=" + finishReason(turn) + "）");
         }
         return turn.content().trim();
     }
@@ -165,11 +164,12 @@ public class RagEvalCaseRunner {
             List<Map<String, Object>> messages = List.of(
                     Map.of("role", "system", "content", JUDGE_SYSTEM_PROMPT),
                     Map.of("role", "user", "content", objectMapper.writeValueAsString(payload)));
-            LlmProviderRouter.ReActTurn turn = callWithTimeout(
-                    () -> llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
-                            properties.getJudgeMaxTokens(), ModelCallPriority.BACKGROUND),
-                    properties.getJudgeTimeoutSeconds());
-            return JudgeOutputParser.parse(turn == null ? null : turn.content(), objectMapper);
+            LlmProviderRouter.ReActTurn turn = completeAllowingOneRetry(messages, properties.getJudgeMaxTokens(),
+                    properties.getJudgeTimeoutSeconds(), "评委");
+            if (isEmpty(turn)) {
+                return JudgeVerdict.failed("评委输出为空（finish_reason=" + finishReason(turn) + "）", null);
+            }
+            return JudgeOutputParser.parse(turn.content(), objectMapper);
         } catch (Exception e) {
             logger.warn("评委调用失败: case={}, error={}", evalCase.id(), e.getMessage());
             return JudgeVerdict.failed("评委调用失败: " + rootMessage(e), null);
@@ -193,6 +193,51 @@ public class RagEvalCaseRunner {
             evidence.add(item);
         }
         return evidence;
+    }
+
+    /**
+     * 推理模型的思考过程也计入 max_tokens，预算用完时 content 为空、finish_reason=length。
+     * 输出为空时重试一次：因长度截断的把预算翻倍（不超过 eval.max-retry-tokens），其他原因按原预算重试。
+     */
+    private LlmProviderRouter.ReActTurn completeAllowingOneRetry(List<Map<String, Object>> messages, int maxTokens,
+                                                                 int timeoutSeconds, String stage) throws Exception {
+        LlmProviderRouter.ReActTurn turn = complete(messages, maxTokens, timeoutSeconds);
+        if (!isEmpty(turn)) {
+            return turn;
+        }
+        int retryTokens = "length".equals(finishReason(turn))
+                ? Math.max(maxTokens, Math.min(maxTokens * 2, properties.getMaxRetryTokens()))
+                : maxTokens;
+        logger.warn("评测{}输出为空，重试一次: finish_reason={}, maxTokens={} -> {}", stage, finishReason(turn), maxTokens, retryTokens);
+        return complete(messages, retryTokens, timeoutSeconds);
+    }
+
+    private LlmProviderRouter.ReActTurn complete(List<Map<String, Object>> messages, int maxTokens, int timeoutSeconds)
+            throws Exception {
+        return callWithTimeout(
+                () -> llmProviderRouter.completeReActTurn(properties.getRequesterId(), messages, List.of(),
+                        maxTokens, ModelCallPriority.BACKGROUND),
+                timeoutSeconds);
+    }
+
+    private static boolean isEmpty(LlmProviderRouter.ReActTurn turn) {
+        return turn == null || turn.content() == null || turn.content().isBlank();
+    }
+
+    private static String finishReason(LlmProviderRouter.ReActTurn turn) {
+        return turn == null || turn.finishReason() == null ? "unknown" : turn.finishReason();
+    }
+
+    /**
+     * 报告里记录本次评测用的主模型，便于不同模型的结果对比；故障切换到备用供应商的调用不单独区分
+     */
+    String primaryLlmDescription() {
+        try {
+            return llmProviderRouter.primaryProviderDescription();
+        } catch (Exception e) {
+            logger.warn("读取当前 LLM 供应商失败: {}", e.getMessage());
+            return null;
+        }
     }
 
     private <T> T callWithTimeout(Supplier<T> call, int timeoutSeconds) throws Exception {
@@ -229,6 +274,7 @@ public class RagEvalCaseRunner {
         private String retrievalMode = "NONE";
         private List<EvalCaseResult.RetrievedChunk> retrieved = List.of();
         private Boolean retrievalHit;
+        private Boolean docHit;
         private Integer firstRelevantRank;
         private Double reciprocalRank;
         private Double expectedDocCoverage;
@@ -250,9 +296,11 @@ public class RagEvalCaseRunner {
                     evalCase.referenceAnswer(),
                     evalCase.expectedFileMd5s(),
                     evalCase.expectedFileNames(),
+                    evalCase.expectedEvidence(),
                     retrievalMode,
                     retrieved,
                     retrievalHit,
+                    docHit,
                     firstRelevantRank,
                     reciprocalRank,
                     expectedDocCoverage,

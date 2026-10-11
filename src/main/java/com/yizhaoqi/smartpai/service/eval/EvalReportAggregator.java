@@ -22,6 +22,8 @@ public final class EvalReportAggregator {
     public static EvalReport.EvalSummary summarize(List<EvalCaseResult> results) {
         int labeled = 0;
         int hits = 0;
+        int docHits = 0;
+        int evidenceLabeled = 0;
         double rrSum = 0d;
         double coverageSum = 0d;
         int judged = 0;
@@ -39,6 +41,8 @@ public final class EvalReportAggregator {
             if (result.retrievalHit() != null) {
                 labeled++;
                 hits += result.retrievalHit() ? 1 : 0;
+                docHits += Boolean.TRUE.equals(result.docHit()) ? 1 : 0;
+                evidenceLabeled += result.expectedEvidence() != null && !result.expectedEvidence().isEmpty() ? 1 : 0;
                 rrSum += result.reciprocalRank() == null ? 0d : result.reciprocalRank();
                 coverageSum += result.expectedDocCoverage() == null ? 0d : result.expectedDocCoverage();
             }
@@ -61,6 +65,8 @@ public final class EvalReportAggregator {
                 hits,
                 ratio(hits, labeled),
                 ratio(rrSum, labeled),
+                ratio(docHits, labeled),
+                evidenceLabeled,
                 ratio(coverageSum, labeled),
                 judged,
                 correct,

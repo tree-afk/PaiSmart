@@ -43,6 +43,23 @@ class EvalReportAggregatorTest {
     }
 
     @Test
+    void docRecallCountsFileLevelHitsSeparatelyFromEvidenceHits() {
+        // 期望文件召回了，但召回的分块不含证据短语：分块级未命中，文件级命中
+        EvalCaseResult wrongChunk = new EvalCaseResult("id", "q", "ref", List.of(), List.of("a.pdf"), List.of("Naive UI"),
+                "HYBRID", List.of(), false, true, null, 0.0, 1.0, "answer", 2, false, null, null,
+                EvalDiagnosis.RETRIEVAL_MISS, false, null, null, 1L);
+        EvalCaseResult rightChunk = new EvalCaseResult("id", "q", "ref", List.of(), List.of("a.pdf"), List.of(),
+                "HYBRID", List.of(), true, true, 1, 1.0, 1.0, "answer", 5, true, null, null,
+                EvalDiagnosis.OK, false, null, null, 1L);
+
+        EvalReport.EvalSummary summary = EvalReportAggregator.summarize(List.of(wrongChunk, rightChunk));
+
+        assertEquals(0.5, summary.recallAtK());
+        assertEquals(1.0, summary.docRecallAtK());
+        assertEquals(1, summary.evidenceLabeledCases());
+    }
+
+    @Test
     void metricsAreNullWhenNothingToMeasure() {
         EvalReport.EvalSummary summary = EvalReportAggregator.summarize(List.of(
                 result("NONE", null, null, null, null, null, EvalDiagnosis.GENERATION_FAILED, false)));
@@ -61,7 +78,7 @@ class EvalReportAggregatorTest {
 
     private static EvalCaseResult result(String mode, Boolean hit, Integer rank, Double rr,
                                          Integer score, Boolean correct, EvalDiagnosis diagnosis, boolean review) {
-        return new EvalCaseResult("id", "q", "ref", List.of(), List.of(), mode, List.of(), hit, rank, rr,
+        return new EvalCaseResult("id", "q", "ref", List.of(), List.of(), List.of(), mode, List.of(), hit, hit, rank, rr,
                 hit == null ? null : (hit ? 1.0 : 0.0), "answer", score, correct, null, null, diagnosis, review,
                 review ? "RANDOM_SAMPLE" : null, null, 1L);
     }

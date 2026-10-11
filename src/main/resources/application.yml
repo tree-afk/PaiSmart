@@ -302,8 +302,10 @@ eval:
   default-top-k: ${EVAL_DEFAULT_TOP_K:5}
   max-top-k: 20
   max-cases: ${EVAL_MAX_CASES:500}
-  generation-max-tokens: ${EVAL_GENERATION_MAX_TOKENS:1500}
-  judge-max-tokens: ${EVAL_JUDGE_MAX_TOKENS:300}
+  # 推理模型的思考过程也计入 max_tokens，给小了会只思考不输出；输出为空时会重试一次，因长度截断的预算翻倍（不超过 max-retry-tokens）
+  generation-max-tokens: ${EVAL_GENERATION_MAX_TOKENS:4000}
+  judge-max-tokens: ${EVAL_JUDGE_MAX_TOKENS:2000}
+  max-retry-tokens: ${EVAL_MAX_RETRY_TOKENS:8000}
   generation-timeout-seconds: ${EVAL_GENERATION_TIMEOUT_SECONDS:90}
   judge-timeout-seconds: ${EVAL_JUDGE_TIMEOUT_SECONDS:60}
   max-evidence-chars: 800

@@ -295,6 +295,14 @@ public class LlmProviderRouter {
     /**
      * 激活供应商在前、备用供应商在后；关闭切换时只有激活供应商
      */
+    /**
+     * 调用链上的首选供应商，格式 provider/model
+     */
+    public String primaryProviderDescription() {
+        ModelProviderConfigService.ActiveProviderView primary = providerChain().get(0);
+        return primary.provider() + "/" + primary.model();
+    }
+
     private List<ModelProviderConfigService.ActiveProviderView> providerChain() {
         ModelCallProperties.Failover failover = modelCallProperties.getFailover();
         if (!failover.isLlmEnabled()) {
