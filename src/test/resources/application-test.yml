@@ -93,3 +93,8 @@ embedding:
     url: http://localhost:8000
     key:
     model: text-embedding-v4
+
+# 测试专用的模型配置加密密钥（32 字节），jwt.secret-key 解码后不是 16/24/32 字节，不能复用
+model-provider:
+  security:
+    secret-key: cGFpc21hcnQtdGVzdC1tb2RlbC1jb25maWcta2V5MzI=

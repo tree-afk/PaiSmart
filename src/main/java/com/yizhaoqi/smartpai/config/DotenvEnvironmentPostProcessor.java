@@ -1,6 +1,8 @@
 package com.yizhaoqi.smartpai.config;
 
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.env.EnvironmentPostProcessor;
 import org.springframework.core.Ordered;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -12,6 +14,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,9 +23,14 @@ public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor,
 
     private static final String PROPERTY_SOURCE_NAME = "paismartDotenv";
     private static final String DOTENV_FILE = ".env";
+    private static final String TEST_PROFILE = "test";
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
+        // test 配置用内存 H2 等隔离环境，.env 是本地开发配置，优先级又高于 application-test.yml，加载进来会把数据源等覆盖成开发库
+        if (isTestProfileActive(environment)) {
+            return;
+        }
         Path dotenvPath = Path.of(System.getProperty("user.dir"), DOTENV_FILE);
         if (!Files.isRegularFile(dotenvPath)) {
             return;
@@ -52,6 +60,17 @@ public class DotenvEnvironmentPostProcessor implements EnvironmentPostProcessor,
     @Override
     public int getOrder() {
         return Ordered.HIGHEST_PRECEDENCE;
+    }
+
+    static boolean isTestProfileActive(ConfigurableEnvironment environment) {
+        if (Arrays.asList(environment.getActiveProfiles()).contains(TEST_PROFILE)) {
+            return true;
+        }
+        // @ActiveProfiles 写入的是 spring.profiles.active[0] 这种索引形式，用 Binder 才能同时识别逗号分隔和索引两种写法
+        return Binder.get(environment)
+                .bind("spring.profiles.active", Bindable.listOf(String.class))
+                .map(profiles -> profiles.stream().map(String::trim).anyMatch(TEST_PROFILE::equals))
+                .orElse(false);
     }
 
     private Map<String, Object> loadDotenv(Path dotenvPath) {
