@@ -208,7 +208,7 @@ frontend/
 - 内置两份数据集：`sample-eval.jsonl` 是 5 条示例；`paismart-eval-v1.jsonl` 是 50 条正式测评集，覆盖单点事实、同义改写、多跳综合、资料冲突、私有文档、跨文档、无答案七类题型（id 前缀即题型），全部带分块级标注。`scripts/eval_compare.py` 按题型拆分报告，并把多份报告并排对比。
 - 检索以发起评测的管理员身份调用线上同一条混合检索链路，计算 Recall@K（前 K 条里出现任一相关分块即命中）、文件级 Recall（`docRecallAtK`，用来和分块级对比）和 MRR，并记录检索模式（`HYBRID` / `HYBRID_RRF` / `TEXT_ONLY`）。检索的问题向量化计入该管理员的 Embedding 查询限流（`embedding-query-request`），每日上限调得太低时检索会降级为 `TEXT_ONLY`，看报告的检索模式统计就能发现。
 - 生成沿用问答的提示词约定（`ai.prompt.rules` + 检索片段块），用非流式调用得到回答。
-- 另起一次 LLM 调用做评委，对照参考答案和检索证据输出 `{"score": 1-5, "correct": true/false, "reason": "..."}`。评委提示词把所有字段当作数据，不因回答更长而加分；输出解析失败的用例一律标记人工复核，另按 `eval.human-review-sample-rate` 随机抽样人工复核。
+- 另起一次 LLM 调用做评委，对照参考答案和检索证据输出 `{"score": 1-5, "correct": true/false, "reason": "..."}`。评委提示词把所有字段当作数据，不因回答更长而加分；输出解析失败的用例，以及检索没召回答案分块、评委却判对的用例（`MISS_BUT_CORRECT`，人工校准发现评委在这类用例上偏宽松）一律标记人工复核，另按 `eval.human-review-sample-rate` 随机抽样人工复核。
 - 推理模型的思考过程也计入 `max_tokens`，预算用完时回答为空；生成和评委输出为空时都会重试一次，因长度截断（`finish_reason=length`）的把预算翻倍。报告的 `config.llm` 记录本次用的主模型。
 - 报告给出 Recall@K、MRR、评委平均分、准确率和问题归因：`PROMPT_OR_MODEL`（检索命中但回答错，查提示词或模型），`RETRIEVAL_MISS`（检索未命中，查分块和检索），以及逐条明细。报告以 JSON 写入 `eval.output-dir`，文件名带 `label`，调整分块前后各跑一次、用不同 label 区分即可对比。
 

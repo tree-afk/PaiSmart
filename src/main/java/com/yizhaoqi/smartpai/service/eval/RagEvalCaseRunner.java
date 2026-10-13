@@ -103,7 +103,8 @@ public class RagEvalCaseRunner {
         }
         draft.diagnosis = EvalDiagnosis.classify(draft.retrievalHit, draft.answer != null, verdict);
         boolean judgeFailed = draft.answer != null && (verdict == null || verdict.parseFailed());
-        return draft.build(sampler.decide(judgeFailed), System.currentTimeMillis() - start);
+        boolean missButCorrect = draft.diagnosis == EvalDiagnosis.MISS_BUT_CORRECT;
+        return draft.build(sampler.decide(judgeFailed, missButCorrect), System.currentTimeMillis() - start);
     }
 
     private List<SearchResult> expandParents(List<SearchResult> results) {

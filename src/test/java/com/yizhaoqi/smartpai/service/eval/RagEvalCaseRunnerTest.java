@@ -149,6 +149,19 @@ class RagEvalCaseRunnerTest {
     }
 
     @Test
+    void retrievalMissJudgedCorrectAlwaysNeedsHumanReview() {
+        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("other", "x.pdf", "HYBRID")));
+        llmReplies.add("端口是 8080");
+        llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
+
+        assertEquals(EvalDiagnosis.MISS_BUT_CORRECT, result.diagnosis());
+        assertTrue(result.needsHumanReview());
+        assertEquals(HumanReviewSampler.REASON_MISS_BUT_CORRECT, result.reviewReason());
+    }
+
+    @Test
     void generationFailureSkipsJudge() {
         when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
         llmReplies.add(null);
