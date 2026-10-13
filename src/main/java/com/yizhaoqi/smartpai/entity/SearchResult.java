@@ -7,7 +7,8 @@ public class SearchResult {
     private String fileMd5;    // 文件指纹
     private Integer chunkId;   // 文本分块序号
     private String textContent; // 文本内容
-    private Double score;      // 搜索得分
+    private Double score;      // 统一换算到 0 到 1 的得分，不同召回方式之间可比
+    private Double rawScore;   // 换算前的原始分（rerank 分 / RRF 分 / BM25 分），配合 retrievalMode 排查
     private String fileName;   // 原始文件名
     private String userId;     // 上传用户ID
     private String orgTag;     // 组织标签
@@ -63,6 +64,7 @@ public class SearchResult {
     public SearchResult withParentContext(String parentContext, String parentKey) {
         SearchResult copy = new SearchResult(fileMd5, chunkId, textContent, score, userId, orgTag,
                 Boolean.TRUE.equals(isPublic), fileName, pageNumber, anchorText, retrievalMode, matchedChunkText);
+        copy.setRawScore(rawScore);
         copy.setParentContext(parentContext);
         copy.setParentKey(parentKey);
         return copy;

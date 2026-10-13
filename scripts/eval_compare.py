@@ -52,6 +52,16 @@ def main(paths):
               f"  MRR {fmt(s['mrr'], False)}  评委准确率 {fmt(s['accuracy'])}"
               f"  平均分 {fmt(s['meanJudgeScore'], False)}  失败 {s['failedCases']}  检索模式 {s['retrievalModeCounts']}")
         print(f"   归因 {s['diagnosisCounts']}")
+        st = s.get("stages")
+        if st:
+            # 召回阶段看 RRF 候选（rerank 输入），精排阶段看最终 topK 的 NDCG；旧报告没有这一项
+            print(f"   分阶段 召回 Recall@候选 {fmt(st['candidateRecall'])}（BM25 {fmt(st['bm25Recall'])} / KNN {fmt(st['knnRecall'])}）"
+                  f"  精排 NDCG@K {fmt(st['meanNdcgAtK'], False)}（{st['ndcgCases']} 题）"
+                  f"  前 topK 内被阈值丢掉 {st['thresholdDroppedResults']} 条 / {st['thresholdDroppedCases']} 题")
+            if st.get("meanPrecisionAtK") is not None:
+                # 噪声：Precision 的分母是实际返回条数，阈值少返回噪声时会上升；无答案题返回的每一条都是噪声
+                print(f"   噪声 Precision@K {fmt(st['meanPrecisionAtK'])}  每题不相关 {fmt(st['meanIrrelevantInTopK'], False)} 条"
+                      f"  无答案题平均返回 {fmt(st['unlabeledMeanReturned'], False)} 条（{st['unlabeledCases']} 题）")
     print()
     print("题型      | " + " | ".join(f"{r['label']:^52}" for r in reports))
     print("          | " + " | ".join(f"{'Recall':>7} {'文件级':>7} {'MRR':>5} {'空':>3} {'准确率':>7} {'均分':>5} {'失败':>3}"

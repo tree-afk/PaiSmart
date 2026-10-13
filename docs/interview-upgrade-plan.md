@@ -116,3 +116,54 @@
   - 现状：`config/KafkaConfig.java:110-120` 没有设置 `max.poll.records` 和 `max.poll.interval.ms`，用的是客户端默认值（500 条、5 分钟）；LiteParse 单个文件最长 300 秒，再加上信号量最多等 120 秒，一条消息的处理时间可能超过 5 分钟，触发再均衡和重复消费（有租约认领兜底，但会白白浪费一次解析）
   - 目标：`max.poll.records=1`；`max.poll.interval.ms` 大于最长处理时间，建议和心跳超时 `file.processing.reliability` 的 10 分钟对齐
   - 完成：`KafkaConfig.consumerFactory` 设置 `max.poll.records=1`，`max.poll.interval.ms` 直接取 `file.processing.reliability.vectorization-heartbeat-timeout-seconds`（默认 10 分钟），两者改一处就同步；启动时如果 LiteParse 超时 + 等待解析许可（默认 300 + 120 秒）不小于这个间隔会打 WARN。`KafkaConsumerSettingsTest` 断言配置值，本地后端用新配置正常启动和消费（Kafka 客户端的配置打印被 logback 里 `org.apache.kafka` 的 WARN 级别屏蔽，没能从日志里直接看到生效值）
+
+
+## 第三轮：字节 Agent 面试 9 问（2026-10-13）
+
+来源：toBeBetterJavaer `docs/src/sidebar/itwanger/ai/agent-mianshi-zijie-compiler.md`，对照 HEAD `0e005a9f`。文章的 02、03、04 三题讲检索打分，答案按面试官期望的方案写，以下是和源码的差距。
+
+进度：5 / 5 已完成（2026-10-13，未发布）。测试 335 个全部通过（需映射 MinIO 密钥）；本地后端只跑检索的评测 10 轮，聊天实测引用带上了 `score` 与 `rawScore`。评测报告在 `eval-reports/`（不进 git），文件名带 `r3-` 前缀。
+
+- [x] **单路召回失败时保留另一路结果**（文章 02 题）
+  - 现状：`HybridSearchService.java:145` 用 `CompletableFuture.allOf(...).get(timeout)` 等两路，任一路抛异常或超时就整体失败，退到 `TEXT_ONLY`（`:105-107`），另一路已经拿到的结果被丢掉
+  - 目标：两路各自 `handle` 成异常安全的结果，至少一路成功就用成功的那一路继续走 RRF 和重排序，返回时在模式里标明只有一路召回；两路都失败才退到纯文本检索
+  - 完成：`HybridSearchService.hybridSearch` 两路共用一个等待截止时间、各自等待，超时或异常只让这一路失败；至少一路成功就继续 RRF 和重排序，模式标为 `BM25_ONLY` / `KNN_ONLY`（重排序不可用时再加 `_RRF` 后缀），两路都失败才退到 `TEXT_ONLY`。查询向量生成失败也按"KNN 这一路失败"处理，不再直接退到纯文本检索。聊天引用和前端的检索方式文案同步了新模式
+- [x] **RRF 兜底路径补上分数阈值**（文章 04 题）
+  - 现状：`search.hybrid.rerank.score-threshold`（默认 0.1）只在重排序成功时生效（`HybridSearchService.java:183-187`）；跳过重排序或重排序失败时走 `rrfTopK`（`:169-175, 191-201`），直接按 RRF 顺序截取 topK，不做任何过滤，噪声会被交给大模型
+  - 目标：给 RRF 模式单独配一个阈值，按 RRF 分数的理论下界（召回窗口 150 时约 0.0048）和评测结果定值；只被单路召回且名次靠后的结果过滤掉，宁可返回空也不要塞不相关的文档
+  - 完成：新增 `search.hybrid.rrf-score-threshold`，跳过或重排序失败时先按阈值过滤再截取 topK；阈值按两路量纲配置，只有一路召回时自动减半（单路分数上限只有一半），"平均名次"的含义保持一致
+  - 定值：用新加的 `scripts/eval_rrf_threshold.py` 拿评测报告里的 RRF 候选离线模拟。结论和预想不一样：RRF 前 5 名几乎全是两路共同召回的（原始分 0.026 到 0.033，单路最多 0.0164），"只被单路召回、名次靠后"在前 5 名里基本不出现，0.0164 以下的阈值什么都过滤不掉；相关分块最低 0.029，和不相关、无答案题的分数大面积重叠。最终取 0.028（约等于两路平均名次 11 名以内）：分块级 Recall@5 不变（80.4%），无答案题平均返回从 5 条降到 4 条；超过 0.030 召回率开始明显下降
+  - 实测（关掉重排序跑评测）：RRF 兜底 Recall@5 80.4%、MRR 0.59，无答案题返回 5 / 4 / 2 / 5 条，和离线模拟一致。顺带发现：这个评测集上 RRF 顺序的分块级命中率（80.4%）比重排序后（76.1%）还高，gte-rerank-v2 对口语化问句的排序还有提升空间
+- [x] **分数出口统一映射到 0 到 1**（文章 04 题）
+  - 现状：`SearchResult.score` 三种模式量纲不同，重排序分约 0 到 1、RRF 分约 0.0048 到 0.0328、`TEXT_ONLY` 的 BM25 原始分无上界，都原样写进给大模型的文本（`AgentToolRegistry.java:290-291`）和引用映射（`ChatHandler.java:1108`）
+  - 目标：出口按各自的理论上界做一次固定换算（RRF 分除以 0.0328，重排序分原样），不用 min-max（分母随当批结果变化，跨查询不可比）；返回体里保留原始分和模式，便于排查
+  - 完成：`HybridSearchService.normalizeScore` 在出口统一换算：重排序分原样；RRF 分除以两路都排第一时的上界 2/(k+1)；`TEXT_ONLY` 的 BM25 分没有上界，按 score / (score + 10) 做固定的饱和换算（`search.hybrid.bm25-score-saturation`）。`SearchResult` 新增 `rawScore`，聊天引用映射（含持久化）和前端类型都带上 `score` 与 `rawScore`。`SearchResult.withParentContext` 复制父块时原来会丢掉新字段，本地聊天实测时发现，已修复并补了用例
+- [x] **文件名参与关键词打分**（文章 03 题）
+  - 现状：ES 索引里没有文件名字段，文件名是检索完成后按 fileMd5 从 MySQL 关联出来的（`HybridSearchService.java:403-418`），所以不参与 BM25 打分；关键词查询是单字段 `match`（`:234-239`）
+  - 目标：建索引时把文件名写成独立字段，查询改成多字段匹配并给文件名更高权重，让《向量检索设计》这类标题性强的文档在对应提问下排得更前；同时评估 `minimum_should_match` 和短语加分对口语化长问句的影响
+  - 完成：mapping 模板新增 `fileName`（IK 分词），入库和 embedding 重建都写入文件名；启动时 `FileNameIndexBackfill` 在后台给缺这个字段的旧分块按 fileMd5 补写（只补缺的，可重复执行）。关键词查询改为"正文必须匹配 + 文件名、短语作为加分项"，文件名单独成字段、不和正文合并统计；`minimum_should_match`、短语加分都可配置
+  - 评测（只跑检索，50 题）：所有组合的最终 Recall@5 都是 76.1%，最终顺序由重排序决定，差异只出现在 BM25 这一路。`minimum_should_match` 30% 让 3 道口语化长问句（para）的相关分块掉出 BM25 前 50，召回阶段 Recall@50 从 100% 降到 97.8%，默认不开；短语加分 1.5 没有可测量的影响，默认不开；文件名权重越大 BM25 排序越差（权重 2 时 BM25 MRR 0.591→0.560），因为本地知识库的文件名不具描述性（paismart.pdf 这类），加权会把同一文件的所有分块一起抬高。默认取 0.5（BM25 MRR 0.587，基本无损）
+  - 局限：评测集里没有"按标题找文档"的问题，文件名加分的收益这次没法量化，只验证了不伤现有效果；本地开发库的旧索引里 `fileName` 早先被动态映射成了标准分词（不是 IK），无法原地改分词器，本地评测是在标准分词上做的。生产索引原来没有这个字段，发布后会按模板建成 IK
+- [x] **评测补 NDCG 与分阶段指标**（文章 04 题）
+  - 现状：`RetrievalMetrics.java:12-20` 只有 Recall@K（命中率口径）、MRR、文档覆盖率；评测集 `eval/paismart-eval-v1.jsonl` 50 题；只评最终结果，召回阶段（RRF 前 50 条）和精排阶段的效果没有分开看
+  - 目标：加 NDCG@K，并分别统计召回阶段的 Recall@50 和精排阶段的 NDCG@5，这样调召回窗口和调重排序能分开判断收益；阈值 0.0 和 0.1 的 Recall 和 MRR 完全相同，但逐题对比 0.1 仍在过滤前五名里的低分噪声（两道 RustFS 题 0.1 下返回 2 条，0 下多出 3 条 0.06 到 0.09 分的无关分块），现有指标只看第一个相关结果，反映不出这类差别，分阶段指标之外还要补一个看噪声的指标（如 Precision@K）
+  - 完成：`HybridSearchService.searchWithTrace` 额外返回每一路前 50 条、RRF 候选（重排序的输入）和"前 topK 名里被阈值丢掉的条数"。评测每题记录：召回阶段命中、BM25 / KNN 各自的命中和首个相关名次、精排阶段 NDCG@K（二元相关，理想排序取候选池里的相关条数）、噪声指标（Precision@K、不相关条数、返回条数）、RRF 候选明细（带原始分）。报告汇总新增 `stages`，`scripts/eval_compare.py` 一并打印。评测接口新增 `retrievalOnly`：只跑检索、不生成不打分，调检索参数时一轮约 1 分钟，不花大模型 Token
+  - Precision 的分母是实际返回条数而不是固定的 K：固定分母下"返回 2 条、2 条相关"和"返回 5 条、2 条相关"都是 0.4，反映不出阈值过滤噪声的效果
+  - 基线数字（50 题，topK 5）：召回阶段 Recall@50 100%（BM25 97.8%、KNN 100%），精排 NDCG@5 0.545，最终分块级 Recall@5 76.1%、MRR 0.59。召回已经饱和，短板在重排序把相关分块排进前 5
+  - 阈值 0.0 和 0.1 对比：Recall@5、MRR、NDCG 完全相同；0.1 在 2 道 RustFS 题的前 5 名里丢掉 6 条不相关结果，Precision@K 19.1%→20.4%，每题不相关 4.04→3.91 条。无答案题在两种阈值下都返回 5 条（它们的重排序分 0.18 到 0.30，高于 0.1），拒答目前仍靠提示词
+
+
+## 第四轮：派聪明测评集教程（2026-10-13）
+
+来源：toBeBetterJavaer `docs/src/sidebar/itwanger/ai/paismart-rag-eval-set.md`，对照 HEAD `951edd22`。文章 08 节的面试答案按期望方案写，下面是和源码的差距。
+
+- [ ] **评委和生成回答使用不同厂商的模型**（文章 08 节第 04 题追问）
+  - 现状：生成回答（`service/eval/RagEvalCaseRunner.java:147`）和评委打分（`:158`）都经过 `completeAllowingOneRetry` 调用 `llmProviderRouter.completeReActTurn`（`:219`），走同一条供应商调用链，评委和被评回答是同一个模型（当前 deepseek-v4-pro）
+  - 目标：新增 `eval.judge-provider` 配置，评委固定使用另一家供应商的模型（如 qwen），报告 `config` 同时记录生成模型和评委模型；保留人工抽样复核，交叉评审数据显示两个模型会同向偏宽松（`docs/eval/reports/README.md` 人工校准一节，模型间 kappa 0.87、与人工 0.61 / 0.73）
+- [ ] **测评集接入发布流程，指标比基线差就拦截**（文章 08 节第 05 题）
+  - 现状：评测只能由管理员手动调用 `POST /api/v1/admin/eval/run`（`controller/RagEvalAdminController.java:58`）触发，前后对比靠人工运行 `scripts/eval_compare.py`，部署脚本 `scripts/deploy-release.sh` 里没有评测环节
+  - 目标：发布前自动运行 `paismart-eval-v1.jsonl`，和存档的基线报告按题型对比，分块级 Recall@5、MRR、评委准确率任一项下降超过阈值（如 3 个百分点）或出现失败用例就阻断发布，报告随发布记录归档
+- [ ] **检索模式异常时报告直接告警，评测检索不占管理员配额**（文章 03 节、08 节第 05 题）
+  - 现状：报告只统计 `retrievalModeCounts`（`service/eval/EvalReportAggregator.java:59`），出现 `TEXT_ONLY` 等降级模式不会告警；评测检索的问题向量化用发起评测的管理员 id 作为请求方（`service/HybridSearchService.java:104`、`:130`），计入该用户的 Embedding 查询限流，额度用完后检索静默降级为纯文本
+  - 目标：报告汇总里非 `HYBRID` 模式占比超过阈值时给出 `warning`；评测检索的向量化改用 `system-eval` 请求方并豁免按用户的次数限制（全网 token 预算仍生效），权限过滤仍按发起评测的管理员
+

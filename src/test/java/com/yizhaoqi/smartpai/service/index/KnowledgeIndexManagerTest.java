@@ -51,11 +51,13 @@ class KnowledgeIndexManagerTest {
 
         var missing = manager.missingTemplateFields(oldIndexFields);
 
-        assertEquals(1, missing.size());
+        assertEquals(2, missing.size());
         assertTrue(missing.has("chunkContext"));
+        assertTrue(missing.has("fileName"));
         assertFalse(manager.missingTemplateFields(Set.of()).has("vector"), "vector 维度随模型变化，不追加");
         var afterUpgrade = new java.util.HashSet<>(oldIndexFields);
         afterUpgrade.add("chunkContext");
+        afterUpgrade.add("fileName");
         assertTrue(manager.missingTemplateFields(afterUpgrade).isEmpty(), "重复调用是空操作");
     }
 

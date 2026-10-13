@@ -70,8 +70,8 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void retrievalHitAndCorrectAnswer() throws Exception {
-        when(searchService.searchWithPermission("端口？", "7", 3)).thenReturn(List.of(
-                result("other", "x.pdf", "HYBRID"), result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace("端口？", "7", 3)).thenReturn(trace(List.of(
+                result("other", "x.pdf", "HYBRID"), result("m1", "config.pdf", "HYBRID"))));
         llmReplies.add("端口是 8080（来源#2: config.pdf）");
         llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
 
@@ -100,7 +100,7 @@ class RagEvalCaseRunnerTest {
     @Test
     void generationAndJudgeSeeParentBlockWhileRetrievalMetricsUseSmallChunk() throws Exception {
         parentProperties.setEnabled(true);
-        when(searchService.searchWithPermission("端口？", "7", 3)).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace("端口？", "7", 3)).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
         when(documentVectorRepository.findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc("m1", 0, 2)).thenReturn(List.of(
                 chunk("m1", 1, "端口配置为 8080"), chunk("m1", 2, "修改端口后需要重启服务。")));
         llmReplies.add("端口是 8080，修改后需要重启（来源#1: config.pdf）");
@@ -120,7 +120,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void malformedJudgeOutputAlwaysNeedsHumanReview() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID_RRF")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID_RRF"))));
         llmReplies.add("端口是 8080");
         llmReplies.add("我给 5 分");
 
@@ -136,7 +136,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void retrievalMissIsDiagnosedAsRetrievalProblem() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("other", "x.pdf", "TEXT_ONLY")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("other", "x.pdf", "TEXT_ONLY"))));
         llmReplies.add("资料中没有相关说明");
         llmReplies.add("{\"score\": 1, \"correct\": false, \"reason\": \"没答出来\"}");
 
@@ -150,7 +150,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void retrievalMissJudgedCorrectAlwaysNeedsHumanReview() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("other", "x.pdf", "HYBRID")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("other", "x.pdf", "HYBRID"))));
         llmReplies.add("端口是 8080");
         llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
 
@@ -163,7 +163,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void generationFailureSkipsJudge() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
         llmReplies.add(null);
 
         EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
@@ -176,7 +176,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void judgeTruncatedByReasoningIsRetriedWithDoubledBudget() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
         llmReplies.addAll(List.of("端口是 8080", "", "{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}"));
         llmFinishReasons.addAll(List.of("stop", "length", "stop"));
 
@@ -189,7 +189,7 @@ class RagEvalCaseRunnerTest {
     @Test
     void emptyAnswerAfterRetryFailsWithFinishReasonAndCappedBudget() {
         properties.setMaxRetryTokens(6000);
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
         llmReplies.addAll(List.of("", " "));
         llmFinishReasons.addAll(List.of("length", "length"));
 
@@ -202,7 +202,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void emptyOutputNotCausedByLengthRetriesWithSameBudget() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of(result("m1", "config.pdf", "HYBRID")));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
         llmReplies.addAll(List.of("端口是 8080", "", ""));
 
         EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
@@ -214,7 +214,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void emptyRetrievalUsesNoResultPromptAndModeNone() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenReturn(List.of());
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace(List.of()));
         llmReplies.add("暂无相关信息");
         llmReplies.add("{\"score\": 1, \"correct\": false}");
 
@@ -227,7 +227,7 @@ class RagEvalCaseRunnerTest {
 
     @Test
     void retrievalExceptionIsRecorded() {
-        when(searchService.searchWithPermission(anyString(), eq("7"), anyInt())).thenThrow(new IllegalStateException("es down"));
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenThrow(new IllegalStateException("es down"));
 
         EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling);
 
@@ -235,8 +235,41 @@ class RagEvalCaseRunnerTest {
         assertTrue(llmCalls.isEmpty());
     }
 
+    @Test
+    void retrievalOnlyRecordsStageMetricsWithoutCallingTheModel() {
+        SearchResult relevant = result("m1", "config.pdf", "HYBRID");
+        SearchResult noise = result("other", "x.pdf", "HYBRID");
+        // 候选池里第 3 名才是相关分块，最终 topK 把它排到了第 2
+        HybridSearchService.SearchTrace trace = new HybridSearchService.SearchTrace(
+                List.of(noise, relevant), List.of(noise, noise, relevant), List.of(relevant), List.of(noise), "HYBRID", 1);
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt())).thenReturn(trace);
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling, true);
+
+        assertTrue(llmCalls.isEmpty(), "只跑检索时不调用模型");
+        assertEquals(2, result.firstRelevantRank());
+        EvalCaseResult.Stages stages = result.stages();
+        assertTrue(stages.candidateHit());
+        assertEquals(1, stages.relevantInCandidates());
+        assertEquals(1d / (Math.log(3) / Math.log(2)), stages.ndcgAtK(), 1e-9, "相关分块排第 2：DCG=1/log2(3)，IDCG=1");
+        assertTrue(stages.bm25Hit());
+        assertEquals(1, stages.bm25FirstRank());
+        assertTrue(!stages.knnHit());
+        assertEquals(1, stages.thresholdDroppedInTopK());
+        assertEquals(3, stages.candidates().size());
+        assertTrue(stages.candidates().get(2).relevant());
+        assertEquals(0.5, stages.precisionAtK(), 1e-9, "返回 2 条、1 条相关");
+        assertEquals(1, stages.irrelevantInTopK());
+        assertEquals(2, stages.returnedCount());
+    }
+
     private static EvalCase evalCase(List<String> md5s) {
         return new EvalCase("c1", "端口？", md5s, List.of(), "8080");
+    }
+
+    private static HybridSearchService.SearchTrace trace(List<SearchResult> results) {
+        String mode = results.isEmpty() ? null : results.get(0).getRetrievalMode();
+        return new HybridSearchService.SearchTrace(results, results, List.of(), List.of(), mode, 0);
     }
 
     private static SearchResult result(String md5, String fileName, String mode) {

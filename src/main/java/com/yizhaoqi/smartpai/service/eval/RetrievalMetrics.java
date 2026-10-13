@@ -17,6 +17,7 @@ import java.util.stream.Collectors;
  * 期望文档优先按 MD5 匹配，其次按文件名（忽略大小写）匹配。
  * 用例标注了 expectedEvidence 时，相关分块还要求分块文本包含其中任意一个短语（分块级）；
  * 否则同一文件的任何分块都算相关（文件级）。文件级命中另外单独记录，用来对比两种口径的差距。
+ * - NDCG@K（二元相关）：DCG = Σ rel_i / log2(i+1)，理想排序取候选池里的相关条数，衡量精排把相关分块排到前面的程度。
  */
 public final class RetrievalMetrics {
 
@@ -53,6 +54,41 @@ public final class RetrievalMetrics {
             }
         }
         return false;
+    }
+
+    /**
+     * 列表里相关分块的条数
+     */
+    public static int countRelevant(List<SearchResult> results, EvalCase evalCase) {
+        if (results == null) {
+            return 0;
+        }
+        return (int) results.stream().filter(result -> isRelevant(result, evalCase)).count();
+    }
+
+    /**
+     * 二元相关的 NDCG@K。idealRelevant 是理想排序里能放进前 K 的相关条数（取候选池里的相关条数）；为 0 时返回 null
+     */
+    public static Double ndcg(List<SearchResult> results, EvalCase evalCase, int k, int idealRelevant) {
+        if (idealRelevant <= 0) {
+            return null;
+        }
+        double dcg = 0d;
+        int limit = limit(results, k);
+        for (int i = 0; i < limit; i++) {
+            if (isRelevant(results.get(i), evalCase)) {
+                dcg += 1d / log2(i + 2);
+            }
+        }
+        double idcg = 0d;
+        for (int i = 0; i < Math.min(k, idealRelevant); i++) {
+            idcg += 1d / log2(i + 2);
+        }
+        return dcg / idcg;
+    }
+
+    private static double log2(int value) {
+        return Math.log(value) / Math.log(2);
     }
 
     public static double reciprocalRank(int rank) {

@@ -13,6 +13,7 @@ public class EsDocument {
     private String id;             // 文档唯一标识
     private String fileMd5;        // 文件指纹
     private Integer chunkId;       // 文本分块序号
+    private String fileName;       // 文件名，单独参与关键词打分（标题性强的文档在对应提问下排得更前）
     private String textContent;    // 分块原文（展示、引用、证据片段只用这个字段）
     private String chunkContext;   // 上下文检索生成的分块说明，只参与 BM25 与 embedding，可为空
     private Integer pageNumber;    // PDF 页码

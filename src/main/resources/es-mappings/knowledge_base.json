@@ -14,6 +14,11 @@
         "type": "text",
         "index": false
       },
+      "fileName": {
+        "type": "text",
+        "analyzer": "ik_max_word",
+        "search_analyzer": "ik_smart"
+      },
       "textContent": {
         "type": "text",
         "analyzer": "ik_max_word",

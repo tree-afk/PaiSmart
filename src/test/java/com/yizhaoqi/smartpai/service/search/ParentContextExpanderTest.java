@@ -117,6 +117,19 @@ class ParentContextExpanderTest {
         verify(repository, never()).findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc(eq("other"), anyInt(), anyInt());
     }
 
+    @Test
+    void parentCopyKeepsScoresAndRetrievalMode() {
+        SearchResult hit = hit("md5", 3, 1);
+        hit.setRawScore(0.031);
+        hit.setRetrievalMode("HYBRID_RRF");
+
+        SearchResult copy = hit.withParentContext("父块", "md5#2-4");
+
+        assertEquals(0.031, copy.getRawScore(), 1e-12, "原始分要随父块副本带到引用映射里");
+        assertEquals(hit.getScore(), copy.getScore());
+        assertEquals("HYBRID_RRF", copy.getRetrievalMode());
+    }
+
     private static SearchResult hit(String md5, int chunkId, Integer page) {
         return new SearchResult(md5, chunkId, "第" + chunkId + "块。", 0.9, "7", "org", false, "doc.pdf",
                 page, "anchor-" + chunkId, "HYBRID", null);

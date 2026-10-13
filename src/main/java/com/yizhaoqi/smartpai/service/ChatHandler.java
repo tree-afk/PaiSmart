@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -843,6 +844,7 @@ public class ChatHandler {
             item.put("matchedChunkText", detail.matchedChunkText());
             item.put("evidenceSnippet", detail.evidenceSnippet());
             item.put("score", detail.score());
+            item.put("rawScore", detail.rawScore());
             item.put("chunkId", detail.chunkId());
             item.put("citationStatus", detail.citationStatus());
             item.put("citationReason", detail.citationReason());
@@ -1080,6 +1082,7 @@ public class ChatHandler {
                     (String) item.get("matchedChunkText"),
                     (String) item.get("evidenceSnippet"),
                     item.get("score") instanceof Number number ? number.doubleValue() : null,
+                    item.get("rawScore") instanceof Number number ? number.doubleValue() : null,
                     item.get("chunkId") instanceof Number number ? number.intValue() : null,
                     (String) item.get("citationStatus"),
                     (String) item.get("citationReason")
@@ -1106,6 +1109,7 @@ public class ChatHandler {
                 matchedChunkText,
                 evidenceSnippet,
                 result.getScore(),
+                result.getRawScore(),
                 result.getChunkId(),
                 null,
                 null
@@ -1113,13 +1117,21 @@ public class ChatHandler {
     }
 
     private String buildRetrievalLabel(String retrievalMode) {
-        if ("TEXT_ONLY".equalsIgnoreCase(retrievalMode)) {
+        if (retrievalMode == null) {
+            return "混合召回（语义相关 + 关键词命中）";
+        }
+        String mode = retrievalMode.toUpperCase(Locale.ROOT);
+        if (HybridSearchService.MODE_TEXT_ONLY.equals(mode)) {
             return "关键词召回";
         }
-        if ("HYBRID_RRF".equalsIgnoreCase(retrievalMode)) {
-            return "混合召回（RRF 融合排序，未经 rerank 精排）";
-        }
-        return "混合召回（语义相关 + 关键词命中）";
+        boolean rrf = mode.endsWith(HybridSearchService.RRF_SUFFIX);
+        String recall = rrf ? mode.substring(0, mode.length() - HybridSearchService.RRF_SUFFIX.length()) : mode;
+        String base = switch (recall) {
+            case HybridSearchService.MODE_BM25_ONLY -> "关键词召回（语义召回不可用）";
+            case HybridSearchService.MODE_KNN_ONLY -> "语义召回（关键词召回不可用）";
+            default -> "混合召回（语义相关 + 关键词命中）";
+        };
+        return rrf ? base + "，RRF 融合排序，未经 rerank 精排" : base;
     }
 
     private String buildEvidenceSnippet(String userMessage, String anchorText, String matchedChunkText) {
@@ -1170,7 +1182,10 @@ public class ChatHandler {
             String retrievalQuery,
             String matchedChunkText,
             String evidenceSnippet,
+            /* 换算到 0 到 1 的得分，不同召回方式之间可比 */
             Double score,
+            /* 换算前的原始分，配合 retrievalMode 排查 */
+            Double rawScore,
             Integer chunkId,
             /* 引用校验结论：SUPPORTED / SUSPICIOUS，未开启或未校验时为 null */
             String citationStatus,
@@ -1178,7 +1193,7 @@ public class ChatHandler {
     ) {
         public ReferenceInfo withCitation(String status, String reason) {
             return new ReferenceInfo(fileMd5, fileName, pageNumber, anchorText, retrievalMode, retrievalLabel,
-                    retrievalQuery, matchedChunkText, evidenceSnippet, score, chunkId, status, reason);
+                    retrievalQuery, matchedChunkText, evidenceSnippet, score, rawScore, chunkId, status, reason);
         }
     }
 

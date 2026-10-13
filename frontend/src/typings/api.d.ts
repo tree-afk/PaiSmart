@@ -399,13 +399,27 @@ declare namespace Api {
       fileName: string;
       pageNumber?: number | null;
       anchorText?: string | null;
-      /** HYBRID：双路召回 + rerank；HYBRID_RRF：rerank 不可用时按 RRF 排序兜底；TEXT_ONLY：embedding 失败降级 */
-      retrievalMode?: 'HYBRID' | 'HYBRID_RRF' | 'TEXT_ONLY' | null;
+      /**
+       * HYBRID：双路召回 + rerank；BM25_ONLY / KNN_ONLY：一路召回失败、只用另一路； 带 _RRF 后缀：rerank 不可用时按 RRF
+       * 排序兜底；TEXT_ONLY：双路召回都失败时的纯文本降级
+       */
+      retrievalMode?:
+        | 'HYBRID'
+        | 'HYBRID_RRF'
+        | 'BM25_ONLY'
+        | 'BM25_ONLY_RRF'
+        | 'KNN_ONLY'
+        | 'KNN_ONLY_RRF'
+        | 'TEXT_ONLY'
+        | null;
       retrievalLabel?: string | null;
       retrievalQuery?: string | null;
       matchedChunkText?: string | null;
       evidenceSnippet?: string | null;
+      /** 换算到 0 到 1 的得分，不同召回方式之间可比 */
       score?: number | null;
+      /** 换算前的原始分（rerank / RRF / BM25），配合 retrievalMode 排查 */
+      rawScore?: number | null;
       chunkId?: number | null;
       /** 引用事后校验结论，未开启校验时为空；SUSPICIOUS 表示片段无法支撑引用它的句子 */
       citationStatus?: 'SUPPORTED' | 'SUSPICIOUS' | null;

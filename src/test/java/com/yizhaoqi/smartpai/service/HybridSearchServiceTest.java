@@ -53,6 +53,7 @@ class HybridSearchServiceTest {
     private List<Hit<EsDocument>> bm25Hits;
     private List<Hit<EsDocument>> knnHits;
     private RuntimeException knnFailure;
+    private RuntimeException bm25Failure;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -78,6 +79,10 @@ class HybridSearchServiceTest {
             SearchRequest request = invocation.getArgument(0);
             capturedRequests.add(request);
             if (request.knn().isEmpty()) {
+                // 纯文本降级请求带 min_score，BM25 召回请求不带，借此区分两者
+                if (bm25Failure != null && request.minScore() == null) {
+                    throw bm25Failure;
+                }
                 return response(bm25Hits);
             }
             if (knnFailure != null) {
@@ -120,17 +125,59 @@ class HybridSearchServiceTest {
     @Test
     void rerankFailureFallsBackToRrfOrder() {
         when(rerankClient.rerank(anyString(), anyList())).thenThrow(new IllegalStateException("rerank down"));
+        // 这里只验证 RRF 排序，阈值过滤另有用例
+        properties.setRrfScoreThreshold(0);
 
         List<SearchResult> results = service.searchWithPermission("q", "7", 2);
 
         assertEquals(List.of(2, 1), results.stream().map(SearchResult::getChunkId).toList());
-        assertEquals(1.0 / 62 + 1.0 / 61, results.get(0).getScore(), 1e-12);
+        double raw = 1.0 / 62 + 1.0 / 61;
+        assertEquals(raw, results.get(0).getRawScore(), 1e-12, "原始 RRF 分保留在 rawScore");
+        assertEquals(raw / (2.0 / 61), results.get(0).getScore(), 1e-12, "出口分数按 RRF 理论上界 2/(k+1) 换算");
         assertTrue(results.stream().allMatch(r -> "HYBRID_RRF".equals(r.getRetrievalMode())),
                 "RRF 分数与 rerank 分数量纲不同，单独标记检索模式");
     }
 
     @Test
+    void rrfFallbackDropsLowScoringSinglePathResults() {
+        when(rerankClient.rerank(anyString(), anyList())).thenThrow(new IllegalStateException("rerank down"));
+        // kw 只被 BM25 排第 1（1/61≈0.0164），vec 只被 KNN 排第 2（1/62≈0.0161），both 两路都有
+        properties.setRrfScoreThreshold(0.0163);
+
+        HybridSearchService.SearchTrace trace = service.searchWithTrace("q", "7", 5);
+
+        assertEquals(List.of(2, 1), trace.results().stream().map(SearchResult::getChunkId).toList(),
+                "只被单路召回且分数低于阈值的 vec 不交给模型");
+        assertEquals(1, trace.thresholdDroppedInTopK());
+        assertEquals(3, trace.candidates().size(), "候选列表保留全部 RRF 结果，供评测分析");
+    }
+
+    @Test
+    void rrfThresholdIsHalvedWhenOnlyOnePathRecalled() {
+        knnFailure = new RuntimeException("knn failed");
+        when(rerankClient.rerank(anyString(), anyList())).thenThrow(new IllegalStateException("rerank down"));
+        // 两路量纲的 0.028 在单路时等于 0.014：BM25 第 1、2 名（1/61、1/62）都保留
+        properties.setRrfScoreThreshold(0.028);
+
+        List<SearchResult> results = service.searchWithPermission("q", "7", 5);
+
+        assertEquals(List.of(1, 2), results.stream().map(SearchResult::getChunkId).toList());
+        assertTrue(results.stream().allMatch(r -> "BM25_ONLY_RRF".equals(r.getRetrievalMode())));
+    }
+
+    @Test
+    void scoresAreNormalizedPerModeWithFixedUpperBounds() {
+        assertEquals(0.37, service.normalizeScore("HYBRID", 0.37), 1e-12, "rerank 分原样");
+        assertEquals(1.0, service.normalizeScore("HYBRID_RRF", 2.0 / 61), 1e-12, "两路都排第一换算为 1");
+        assertEquals(0.5, service.normalizeScore("BM25_ONLY_RRF", 1.0 / 61), 1e-12, "单路第一名换算为 0.5");
+        assertEquals(0.5, service.normalizeScore("TEXT_ONLY", 10.0), 1e-12, "BM25 按 score/(score+10) 饱和换算");
+        assertTrue(service.normalizeScore("TEXT_ONLY", 1000.0) < 1.0);
+    }
+
+    @Test
     void rerankIsSkippedWhenRequestDeadlineIsAlmostUsedUp() {
+        // 这里只验证 RRF 排序，阈值过滤另有用例
+        properties.setRrfScoreThreshold(0);
         when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(new RerankClient.RerankHit(0, 0.99)));
 
         List<SearchResult> results;
@@ -146,6 +193,8 @@ class HybridSearchServiceTest {
     @Test
     void rerankDisabledUsesRrfTopK() {
         properties.getRerank().setEnabled(false);
+        // 这里只验证 RRF 排序，阈值过滤另有用例
+        properties.setRrfScoreThreshold(0);
 
         List<SearchResult> results = service.searchWithPermission("q", "7", 3);
 
@@ -174,26 +223,56 @@ class HybridSearchServiceTest {
     }
 
     @Test
-    void embeddingFailureFallsBackToTextOnlyWithPermission() {
+    void embeddingFailureKeepsBm25PathThroughRrfAndRerank() {
         when(embeddingClient.embed(anyList(), anyString(), eq(EmbeddingClient.UsageType.QUERY)))
                 .thenThrow(new RuntimeException("embedding down"));
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(
+                new RerankClient.RerankHit(1, 0.8), new RerankClient.RerankHit(0, 0.6)));
 
         List<SearchResult> results = service.searchWithPermission("q", "7", 5);
 
-        assertEquals(1, capturedRequests.size());
+        assertEquals(1, capturedRequests.size(), "向量生成失败时只发 BM25 一路");
         SearchRequest request = capturedRequests.get(0);
         assertTrue(request.knn().isEmpty());
-        assertEquals(0.3, request.minScore(), 1e-9);
+        assertTrue(request.minScore() == null, "不是纯文本降级");
         assertPermissionFilter(request.query().bool().filter().get(0));
-        assertTrue(results.stream().allMatch(r -> "TEXT_ONLY".equals(r.getRetrievalMode())));
+        assertEquals(List.of(2, 1), results.stream().map(SearchResult::getChunkId).toList());
+        assertTrue(results.stream().allMatch(r -> "BM25_ONLY".equals(r.getRetrievalMode())));
     }
 
     @Test
-    void knnFailureFallsBackToTextOnly() {
+    void knnFailureKeepsBm25ResultsInsteadOfDroppingToTextOnly() {
+        knnFailure = new RuntimeException("knn failed");
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(
+                new RerankClient.RerankHit(0, 0.9), new RerankClient.RerankHit(1, 0.4)));
+
+        List<SearchResult> results = service.searchWithPermission("q", "7", 5);
+
+        assertEquals(List.of(1, 2), results.stream().map(SearchResult::getChunkId).toList());
+        assertTrue(results.stream().allMatch(r -> "BM25_ONLY".equals(r.getRetrievalMode())));
+        verify(rerankClient).rerank(eq("q"), anyList());
+    }
+
+    @Test
+    void bm25FailureKeepsKnnResults() {
+        bm25Failure = new RuntimeException("bm25 failed");
+        when(rerankClient.rerank(anyString(), anyList())).thenThrow(new IllegalStateException("rerank down"));
+
+        List<SearchResult> results = service.searchWithPermission("q", "7", 5);
+
+        assertEquals(List.of(2, 3), results.stream().map(SearchResult::getChunkId).toList());
+        assertTrue(results.stream().allMatch(r -> "KNN_ONLY_RRF".equals(r.getRetrievalMode())));
+    }
+
+    @Test
+    void bothPathsFailingFallsBackToTextOnly() {
+        bm25Failure = new RuntimeException("bm25 failed");
         knnFailure = new RuntimeException("knn failed");
 
         List<SearchResult> results = service.searchWithPermission("q", "7", 5);
 
+        SearchRequest textOnly = capturedRequests.get(capturedRequests.size() - 1);
+        assertEquals(0.3, textOnly.minScore(), 1e-9);
         assertEquals(2, results.size());
         assertTrue(results.stream().allMatch(r -> "TEXT_ONLY".equals(r.getRetrievalMode())));
     }
@@ -205,9 +284,46 @@ class HybridSearchServiceTest {
         service.searchWithPermission("q", "7", 5);
 
         SearchRequest bm25 = capturedRequests.stream().filter(r -> r.knn().isEmpty()).findFirst().orElseThrow();
-        Query keyword = bm25.query().bool().must().get(0);
+        Query keyword = contentQuery(bm25);
         assertTrue(keyword.isMatch());
         assertEquals("textContent", keyword.match().field());
+    }
+
+    @Test
+    void fileNameIsAnExtraBoostOnlyForChunksMatchingContent() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of());
+
+        service.searchWithPermission("向量检索设计", "7", 5);
+
+        SearchRequest bm25 = capturedRequests.stream().filter(r -> r.knn().isEmpty()).findFirst().orElseThrow();
+        Query keyword = bm25.query().bool().must().get(0);
+        assertTrue(keyword.isBool());
+        assertEquals("textContent", keyword.bool().must().get(0).match().field(), "正文必须匹配");
+        Query fileName = keyword.bool().should().get(0);
+        assertEquals("fileName", fileName.match().field(), "文件名单独成字段，只作加分项");
+        assertEquals(0.5f, fileName.match().boost(), 1e-6);
+        assertEquals(1, keyword.bool().should().size(), "短语加分默认关闭");
+    }
+
+    @Test
+    void minimumShouldMatchAndPhraseBoostAreConfigurable() {
+        properties.getKeyword().setFileNameBoost(0);
+        properties.getKeyword().setMinimumShouldMatch("30%");
+        properties.getKeyword().setPhraseBoost(1.5f);
+
+        Query keyword = service.keywordQuery("派聪明的混合检索用了哪两路召回");
+
+        assertEquals("30%", keyword.bool().must().get(0).match().minimumShouldMatch());
+        assertTrue(keyword.bool().should().get(0).isMatchPhrase());
+        assertEquals(1.5f, keyword.bool().should().get(0).matchPhrase().boost(), 1e-6);
+
+        properties.getKeyword().setPhraseBoost(0);
+        assertTrue(service.keywordQuery("q").isMatch(), "加分项都关闭时就是单字段 match");
+    }
+
+    private Query contentQuery(SearchRequest bm25) {
+        Query keyword = bm25.query().bool().must().get(0);
+        return keyword.isBool() ? keyword.bool().must().get(0) : keyword;
     }
 
     @Test
@@ -222,7 +338,7 @@ class HybridSearchServiceTest {
         List<SearchResult> results = service.searchWithPermission("ACME 二季度营收", "7", 5);
 
         SearchRequest bm25 = capturedRequests.stream().filter(r -> r.knn().isEmpty()).findFirst().orElseThrow();
-        Query keyword = bm25.query().bool().must().get(0);
+        Query keyword = contentQuery(bm25);
         assertTrue(keyword.isCombinedFields(), "说明和原文当成一个字段算 BM25");
         assertEquals(List.of("chunkContext", "textContent"), keyword.combinedFields().fields());
         verify(rerankClient).rerank("ACME 二季度营收", List.of("出自 ACME 2023 年二季度财报的营收部分。\n\n营收比上季度增长 3%"));

@@ -32,6 +32,19 @@ public final class EvalReportAggregator {
         int review = 0;
         int failed = 0;
         Map<String, Long> modes = new TreeMap<>();
+        int staged = 0;
+        int candidateHits = 0;
+        int ndcgCases = 0;
+        double ndcgSum = 0d;
+        int bm25Hits = 0;
+        int knnHits = 0;
+        int droppedCases = 0;
+        int droppedResults = 0;
+        int precisionCases = 0;
+        double precisionSum = 0d;
+        double irrelevantSum = 0d;
+        int unlabeled = 0;
+        double unlabeledReturned = 0d;
         Map<String, Long> diagnoses = new LinkedHashMap<>();
         for (EvalDiagnosis diagnosis : EvalDiagnosis.values()) {
             diagnoses.put(diagnosis.name(), 0L);
@@ -57,7 +70,35 @@ public final class EvalReportAggregator {
                 diagnoses.merge(result.diagnosis().name(), 1L, Long::sum);
             }
             modes.merge(result.retrievalMode() == null ? "NONE" : result.retrievalMode(), 1L, Long::sum);
+            EvalCaseResult.Stages stages = result.stages();
+            if (stages != null) {
+                droppedCases += stages.thresholdDroppedInTopK() > 0 ? 1 : 0;
+                droppedResults += stages.thresholdDroppedInTopK();
+                if (stages.candidateHit() == null) {
+                    unlabeled++;
+                    unlabeledReturned += stages.returnedCount();
+                } else {
+                    staged++;
+                    irrelevantSum += stages.irrelevantInTopK();
+                    if (stages.precisionAtK() != null) {
+                        precisionCases++;
+                        precisionSum += stages.precisionAtK();
+                    }
+                    candidateHits += stages.candidateHit() ? 1 : 0;
+                    bm25Hits += Boolean.TRUE.equals(stages.bm25Hit()) ? 1 : 0;
+                    knnHits += Boolean.TRUE.equals(stages.knnHit()) ? 1 : 0;
+                    if (stages.ndcgAtK() != null) {
+                        ndcgCases++;
+                        ndcgSum += stages.ndcgAtK();
+                    }
+                }
+            }
         }
+        EvalReport.StageSummary stageSummary = staged == 0 && unlabeled == 0 ? null
+                : new EvalReport.StageSummary(staged, ratio(candidateHits, staged), ratio(ndcgSum, ndcgCases), ndcgCases,
+                ratio(bm25Hits, staged), ratio(knnHits, staged), droppedCases, droppedResults,
+                ratio(precisionSum, precisionCases), ratio(irrelevantSum, staged), unlabeled,
+                ratio(unlabeledReturned, unlabeled));
 
         return new EvalReport.EvalSummary(
                 results.size(),
@@ -75,7 +116,8 @@ public final class EvalReportAggregator {
                 review,
                 failed,
                 modes,
-                diagnoses);
+                diagnoses,
+                stageSummary);
     }
 
     public static Map<String, String> diagnosisGuide() {

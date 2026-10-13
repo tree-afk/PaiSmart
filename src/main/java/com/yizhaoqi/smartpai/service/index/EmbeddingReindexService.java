@@ -256,6 +256,9 @@ public class EmbeddingReindexService {
         // 上下文说明只和分块内容有关、与 embedding 模型无关，重建时复用 MySQL 里已生成的说明，不重新调用 LLM；
         // 拼法与入库链路一致（ContextualChunkText），功能关闭时两边都按原文建索引
         boolean contextual = contextualProperties != null && contextualProperties.isEnabled();
+        String fileName = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
+                .map(FileUpload::getFileName)
+                .orElse(null);
         int batchSize = Math.max(properties.getBatchSize(), 1);
         for (int start = 0; start < chunks.size(); start += batchSize) {
             List<DocumentVector> batch = chunks.subList(start, Math.min(start + batchSize, chunks.size()));
@@ -285,6 +288,7 @@ public class EmbeddingReindexService {
                         chunk.isPublic()
                 ));
             }
+            docs.forEach(doc -> doc.setFileName(fileName));
             // 拿到向量立即写入，不在内存里攒整份文件
             elasticsearchService.bulkIndex(progress.targetIndex, docs);
             progress.indexedChunks += docs.size();

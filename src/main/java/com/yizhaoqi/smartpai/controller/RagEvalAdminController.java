@@ -66,6 +66,7 @@ public class RagEvalAdminController {
             return error(HttpStatus.BAD_REQUEST, "datasetPath 与 jsonl 必须且只能提供一个");
         }
         return submit(token, request.topK(), request.label(), hasPath ? request.datasetPath().trim() : "inline",
+                Boolean.TRUE.equals(request.retrievalOnly()),
                 () -> hasPath ? evalService.loadDataset(request.datasetPath()) : evalService.parseInline(request.jsonl()));
     }
 
@@ -76,7 +77,8 @@ public class RagEvalAdminController {
     public ResponseEntity<?> runUpload(@RequestHeader("Authorization") String token,
                                        @RequestPart("file") MultipartFile file,
                                        @RequestParam(required = false) Integer topK,
-                                       @RequestParam(required = false) String label) {
+                                       @RequestParam(required = false) String label,
+                                       @RequestParam(required = false) Boolean retrievalOnly) {
         if (file == null || file.isEmpty()) {
             return error(HttpStatus.BAD_REQUEST, "上传的数据集为空");
         }
@@ -84,7 +86,7 @@ public class RagEvalAdminController {
             return error(HttpStatus.BAD_REQUEST, "数据集文件不能超过 5MB");
         }
         String source = "upload:" + (file.getOriginalFilename() == null ? "dataset.jsonl" : file.getOriginalFilename());
-        return submit(token, topK, label, source,
+        return submit(token, topK, label, source, Boolean.TRUE.equals(retrievalOnly),
                 () -> evalService.parseInline(new String(readBytes(file), StandardCharsets.UTF_8)));
     }
 
@@ -160,14 +162,15 @@ public class RagEvalAdminController {
         return copy;
     }
 
-    private ResponseEntity<?> submit(String token, Integer topK, String label, String source, DatasetLoader loader) {
+    private ResponseEntity<?> submit(String token, Integer topK, String label, String source, boolean retrievalOnly,
+                                     DatasetLoader loader) {
         String cleanToken = token.replace("Bearer ", "");
         String operator = jwtUtils.extractUsernameFromToken(cleanToken);
         String userId = jwtUtils.extractUserIdFromToken(cleanToken);
         String searchUserId = userId != null && !userId.isBlank() ? userId : operator;
         try {
             List<EvalCase> cases = loader.load();
-            RagEvalService.RunStatus status = evalService.start(cases, source, topK, label, searchUserId, operator);
+            RagEvalService.RunStatus status = evalService.start(cases, source, topK, label, searchUserId, operator, retrievalOnly);
             LogUtils.logUserOperation(operator, "RAG_EVAL_START", status.runId(), "SUBMITTED");
             return ok("评测任务已提交", status);
         } catch (CustomException e) {
@@ -203,7 +206,10 @@ public class RagEvalAdminController {
         List<EvalCase> load();
     }
 
-    public record RunRequest(String datasetPath, String jsonl, Integer topK, String label) {
+    /**
+     * @param retrievalOnly 只跑检索、只统计检索指标（不生成、不评委打分）
+     */
+    public record RunRequest(String datasetPath, String jsonl, Integer topK, String label, Boolean retrievalOnly) {
     }
 
     public record HumanReviewRequest(List<EvalHumanReviewService.HumanReviewInput> reviews) {

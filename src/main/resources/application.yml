@@ -337,6 +337,19 @@ search:
     # RRF 融合常数，score = Σ 1/(k + rank)
     rrf-k: ${SEARCH_HYBRID_RRF_K:60}
     recall-timeout-seconds: ${SEARCH_HYBRID_RECALL_TIMEOUT_SECONDS:10}
+    # rerank 跳过或失败、按 RRF 顺序兜底时的阈值（原始 RRF 分，按两路都成功的量纲配置，单路召回时自动减半）：
+    # 两路都排第一约 0.0328；0.028 ≈ 两路平均名次在 11 名以内，按评测集定值（见 HybridSearchProperties 注释）
+    rrf-score-threshold: ${SEARCH_HYBRID_RRF_SCORE_THRESHOLD:0.028}
+    # 纯文本降级时 BM25 分按 score/(score+该值) 换算到 0 到 1
+    bm25-score-saturation: ${SEARCH_HYBRID_BM25_SCORE_SATURATION:10}
+    keyword:
+      # 文件名字段的加分权重（只给正文已匹配的分块加分），0 关闭
+      file-name-boost: ${SEARCH_KEYWORD_FILE_NAME_BOOST:0.5}
+      # 正文匹配的 minimum_should_match，例如 30%；为空不限制。评测集上 30% 会让口语化长问句的相关分块掉出 BM25 前 50，默认不开
+      minimum-should-match: ${SEARCH_KEYWORD_MINIMUM_SHOULD_MATCH:}
+      # 正文短语匹配的加分权重，0 关闭
+      phrase-boost: ${SEARCH_KEYWORD_PHRASE_BOOST:0}
+      phrase-slop: ${SEARCH_KEYWORD_PHRASE_SLOP:2}
     rerank:
       # 关闭或调用失败时按 RRF 顺序截取 topK
       enabled: ${SEARCH_RERANK_ENABLED:true}

@@ -3,7 +3,9 @@ package com.yizhaoqi.smartpai.service;
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.model.DocumentVector;
+import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
 import com.yizhaoqi.smartpai.service.contextual.ChunkContextService;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseLostException;
@@ -39,6 +41,9 @@ public class VectorizationService {
 
     @Autowired
     private ChunkContextService chunkContextService;
+
+    @Autowired
+    private FileUploadRepository fileUploadRepository;
 
     // 每批分块数：分页读分块 → 调 embedding → 立即写 ES，整份文件的向量不在内存里攒着
     @Value("${embedding.api.batch-size:10}")
@@ -81,6 +86,7 @@ public class VectorizationService {
                     modelProviderConfigService.getActiveProvider(ModelProviderConfigService.SCOPE_EMBEDDING);
             String modelVersion = EmbeddingClient.modelVersionOf(provider);
             boolean contextual = prepareChunkContexts(fileMd5);
+            String fileName = resolveFileName(fileMd5, userId);
 
             int totalTokens = 0;
             int totalChunks = 0;
@@ -89,7 +95,7 @@ public class VectorizationService {
                 Slice<DocumentVector> slice = documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5, page);
                 List<DocumentVector> chunks = slice.getContent();
                 if (!chunks.isEmpty()) {
-                    totalTokens += embedAndIndexBatch(fileMd5, chunks, userId, orgTag, isPublic, requesterId, provider,
+                    totalTokens += embedAndIndexBatch(fileMd5, fileName, chunks, userId, orgTag, isPublic, requesterId, provider,
                             modelVersion, contextual);
                     totalChunks += chunks.size();
                     onBatchIndexed.run();
@@ -136,7 +142,21 @@ public class VectorizationService {
         return true;
     }
 
+    /**
+     * 文件名单独写进索引参与关键词打分；优先取上传者那条记录，取不到时用该 MD5 最新的记录
+     */
+    private String resolveFileName(String fileMd5, String userId) {
+        if (fileUploadRepository == null) {
+            return null;
+        }
+        return fileUploadRepository.findFirstByFileMd5AndUserIdOrderByCreatedAtDesc(fileMd5, userId)
+                .or(() -> fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5))
+                .map(FileUpload::getFileName)
+                .orElse(null);
+    }
+
     private int embedAndIndexBatch(String fileMd5,
+                                   String fileName,
                                    List<DocumentVector> chunks,
                                    String userId,
                                    String orgTag,
@@ -175,6 +195,7 @@ public class VectorizationService {
                     isPublic
             ));
         }
+        esDocuments.forEach(doc -> doc.setFileName(fileName));
         elasticsearchService.bulkIndex(esDocuments);
         return embeddingResult.totalTokens();
     }

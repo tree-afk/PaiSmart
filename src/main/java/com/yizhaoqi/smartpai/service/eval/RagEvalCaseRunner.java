@@ -72,12 +72,22 @@ public class RagEvalCaseRunner {
     }
 
     public EvalCaseResult run(EvalCase evalCase, String searchUserId, int topK, HumanReviewSampler sampler) {
+        return run(evalCase, searchUserId, topK, sampler, false);
+    }
+
+    /**
+     * @param retrievalOnly 只跑检索并统计检索指标，不生成、不评委打分：调召回、阈值、关键词查询时用，快且不花大模型 Token
+     */
+    public EvalCaseResult run(EvalCase evalCase, String searchUserId, int topK, HumanReviewSampler sampler,
+                              boolean retrievalOnly) {
         long start = System.currentTimeMillis();
         Draft draft = new Draft(evalCase);
 
         List<SearchResult> results;
+        HybridSearchService.SearchTrace trace;
         try {
-            List<SearchResult> raw = hybridSearchService.searchWithPermission(evalCase.question(), searchUserId, topK);
+            trace = hybridSearchService.searchWithTrace(evalCase.question(), searchUserId, topK);
+            List<SearchResult> raw = trace == null ? null : trace.results();
             results = raw == null ? List.of() : raw.subList(0, Math.min(raw.size(), topK));
         } catch (Exception e) {
             logger.warn("评测用例检索失败: case={}, error={}", evalCase.id(), e.getMessage());
@@ -86,6 +96,10 @@ public class RagEvalCaseRunner {
             return draft.build(sampler.decide(false), System.currentTimeMillis() - start);
         }
         recordRetrieval(draft, evalCase, results, topK);
+        recordStages(draft, evalCase, trace, results, topK);
+        if (retrievalOnly) {
+            return draft.build(null, System.currentTimeMillis() - start);
+        }
         // 与线上问答一致：检索指标按命中的小分块算，生成和评委看到的是父块
         results = expandParents(results);
 
@@ -127,7 +141,7 @@ public class RagEvalCaseRunner {
         for (int i = 0; i < results.size(); i++) {
             SearchResult r = results.get(i);
             retrieved.add(new EvalCaseResult.RetrievedChunk(i + 1, r.getFileMd5(), r.getFileName(), r.getChunkId(),
-                    r.getScore(), evalCase.hasExpectedDocs() && RetrievalMetrics.isRelevant(r, evalCase)));
+                    r.getScore(), r.getRawScore(), evalCase.hasExpectedDocs() && RetrievalMetrics.isRelevant(r, evalCase)));
         }
         draft.retrieved = retrieved;
         if (!evalCase.hasExpectedDocs()) {
@@ -139,6 +153,51 @@ public class RagEvalCaseRunner {
         draft.firstRelevantRank = rank > 0 ? rank : null;
         draft.reciprocalRank = RetrievalMetrics.reciprocalRank(rank);
         draft.expectedDocCoverage = RetrievalMetrics.expectedDocCoverage(results, evalCase, topK);
+    }
+
+    /**
+     * 召回阶段（RRF 候选 = rerank 的输入）和精排阶段（最终 topK）分开统计，调召回窗口和调重排序能分开看收益
+     */
+    private void recordStages(Draft draft, EvalCase evalCase, HybridSearchService.SearchTrace trace,
+                              List<SearchResult> results, int topK) {
+        if (trace == null) {
+            return;
+        }
+        List<SearchResult> candidates = trace.candidates() == null ? List.of() : trace.candidates();
+        boolean labeled = evalCase.hasExpectedDocs();
+        List<EvalCaseResult.RetrievedChunk> candidateChunks = new ArrayList<>(candidates.size());
+        for (int i = 0; i < candidates.size(); i++) {
+            SearchResult c = candidates.get(i);
+            candidateChunks.add(new EvalCaseResult.RetrievedChunk(i + 1, c.getFileMd5(), c.getFileName(), c.getChunkId(),
+                    c.getScore(), c.getRawScore(), labeled && RetrievalMetrics.isRelevant(c, evalCase)));
+        }
+        Integer relevantInCandidates = null;
+        Boolean candidateHit = null;
+        Double ndcg = null;
+        Boolean bm25Hit = null;
+        Integer bm25FirstRank = null;
+        Boolean knnHit = null;
+        Integer knnFirstRank = null;
+        if (labeled) {
+            relevantInCandidates = RetrievalMetrics.countRelevant(candidates, evalCase);
+            candidateHit = relevantInCandidates > 0;
+            ndcg = RetrievalMetrics.ndcg(results, evalCase, topK, relevantInCandidates);
+            List<SearchResult> bm25 = trace.bm25Ranked() == null ? List.of() : trace.bm25Ranked();
+            List<SearchResult> knn = trace.knnRanked() == null ? List.of() : trace.knnRanked();
+            int bm25Rank = RetrievalMetrics.firstRelevantRank(bm25, evalCase, bm25.size());
+            int knnRank = RetrievalMetrics.firstRelevantRank(knn, evalCase, knn.size());
+            bm25Hit = bm25Rank > 0;
+            bm25FirstRank = bm25Rank > 0 ? bm25Rank : null;
+            knnHit = knnRank > 0;
+            knnFirstRank = knnRank > 0 ? knnRank : null;
+        }
+        // 噪声：返回结果里不相关的条数；无答案用例里返回的每一条都是噪声
+        int returned = results.size();
+        int relevantReturned = labeled ? RetrievalMetrics.countRelevant(results, evalCase) : 0;
+        Double precision = labeled && returned > 0 ? (double) relevantReturned / returned : null;
+        draft.stages = new EvalCaseResult.Stages(candidateHit, candidates.size(), relevantInCandidates, ndcg,
+                bm25Hit, bm25FirstRank, knnHit, knnFirstRank, trace.thresholdDroppedInTopK(),
+                precision, returned - relevantReturned, returned, candidateChunks);
     }
 
     /**
@@ -283,6 +342,7 @@ public class RagEvalCaseRunner {
         private JudgeVerdict verdict;
         private EvalDiagnosis diagnosis;
         private String error;
+        private EvalCaseResult.Stages stages;
 
         private Draft(EvalCase evalCase) {
             this.evalCase = evalCase;
@@ -314,7 +374,8 @@ public class RagEvalCaseRunner {
                     reviewReason != null,
                     reviewReason,
                     error != null ? error : judgeError,
-                    latencyMs);
+                    latencyMs,
+                    stages);
         }
     }
 }

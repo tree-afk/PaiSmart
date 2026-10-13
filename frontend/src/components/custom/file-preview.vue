@@ -210,6 +210,12 @@ const fallbackRetrievalLabel = computed(() => {
   if (props.retrievalMode === 'HYBRID_RRF') {
     return '混合召回（RRF 融合排序，未经 rerank）';
   }
+  if (props.retrievalMode?.startsWith('BM25_ONLY')) {
+    return '关键词召回（语义召回不可用）';
+  }
+  if (props.retrievalMode?.startsWith('KNN_ONLY')) {
+    return '语义召回（关键词召回不可用）';
+  }
   return '';
 });
 const resolvedHighlightAnchor = computed(() => props.anchorText || '');

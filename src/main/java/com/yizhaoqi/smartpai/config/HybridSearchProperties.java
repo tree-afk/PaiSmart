@@ -25,6 +25,36 @@ public class HybridSearchProperties {
     private int recallTimeoutSeconds = 10;
 
     private Rerank rerank = new Rerank();
+    private Keyword keyword = new Keyword();
+
+    /**
+     * 跳过或 rerank 失败、按 RRF 顺序兜底时的分数阈值（原始 RRF 分，score = Σ 1/(rrfK + 名次)，按两路都成功时的量纲配置）。
+     * 两路都排第一时约 0.0328，只被一路召回时最多 1/61 ≈ 0.0164；只有一路召回成功时阈值自动减半，含义保持一致。
+     * 默认 0.028 ≈ 两路平均名次在 11 名以内。评测集 paismart-eval-v1 上 RRF 前 5 名几乎都是两路共同召回的（0.026 到 0.033），
+     * 相关分块最低 0.029：阈值 0.028 时分块级召回率不变（80.4%），无答案题平均返回从 5 条降到 4 条；超过 0.030 召回率开始明显下降
+     */
+    private double rrfScoreThreshold = 0.028;
+
+    /**
+     * 纯文本降级（TEXT_ONLY）时 BM25 原始分没有上界，出口按 score / (score + 该值) 换算到 0 到 1。
+     * 固定常数而不是 min-max：换算结果不随当批结果变化，跨查询可比
+     */
+    private double bm25ScoreSaturation = 10d;
+
+    @Data
+    public static class Keyword {
+        /**
+         * 文件名字段的权重（作为加分项，只给正文已经匹配的分块加分），0 表示不用文件名打分。
+         * 评测集上权重越大 BM25 一路的排序越差（文件名不具描述性时，同一文件所有分块都被抬高），0.5 基本无损
+         */
+        private float fileNameBoost = 0.5f;
+        /** 正文关键词匹配的 minimum_should_match，例如 "30%"；为空表示不限制（任意一个词命中即可） */
+        private String minimumShouldMatch = "";
+        /** 正文短语匹配的加分权重，0 表示不加短语分 */
+        private float phraseBoost = 0f;
+        /** 短语匹配允许的词间距 */
+        private int phraseSlop = 2;
+    }
 
     @Data
     public static class Rerank {
