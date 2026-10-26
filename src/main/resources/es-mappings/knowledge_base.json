@@ -1,0 +1,97 @@
+{
+  "mappings": {
+    "properties": {
+      "documentId": {
+        "type": "keyword"
+      },
+      "versionId": {
+        "type": "keyword"
+      },
+      "buildId": {
+        "type": "keyword"
+      },
+      "versionNo": {
+        "type": "integer"
+      },
+      "buildNo": {
+        "type": "integer"
+      },
+      "docType": {
+        "type": "keyword"
+      },
+      "jurisdiction": {
+        "type": "keyword"
+      },
+      "jurisdictionCode": {
+        "type": "keyword"
+      },
+      "issuer": {
+        "type": "keyword"
+      },
+      "applicableInstitutions": {
+        "type": "keyword"
+      },
+      "effectiveAt": {
+        "type": "date"
+      },
+      "expiresAt": {
+        "type": "date"
+      },
+      "repealed": {
+        "type": "boolean"
+      },
+      "fileMd5": {
+        "type": "keyword"
+      },
+      "chunkId": {
+        "type": "integer"
+      },
+      "pageNumber": {
+        "type": "integer"
+      },
+      "anchorText": {
+        "type": "text",
+        "index": false
+      },
+      "articlePath": {
+        "type": "keyword"
+      },
+      "clauseNo": {
+        "type": "keyword"
+      },
+      "fileName": {
+        "type": "text",
+        "analyzer": "ik_max_word",
+        "search_analyzer": "ik_smart"
+      },
+      "textContent": {
+        "type": "text",
+        "analyzer": "ik_max_word",
+        "search_analyzer": "ik_smart"
+      },
+      "chunkContext": {
+        "type": "text",
+        "analyzer": "ik_max_word",
+        "search_analyzer": "ik_smart"
+      },
+      "vector": {
+        "type": "dense_vector",
+        "dims": 2048,
+        "index": true,
+        "similarity": "cosine"
+      },
+      "modelVersion": {
+        "type": "keyword"
+      },
+      "userId": {
+        "type": "keyword"
+      },
+      "orgTag": {
+        "type": "keyword"
+      },
+      "public": {
+        "type": "boolean"
+      }
+    }
+  }
+}

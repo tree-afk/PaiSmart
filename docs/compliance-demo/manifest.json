@@ -1,0 +1,95 @@
+{
+  "main": [
+    {
+      "file": "corpus/01-national-regulation-demo.md",
+      "title": "全国适用监管规定（演示）",
+      "docType": "REGULATION",
+      "jurisdiction": "全国",
+      "issuer": "演示监管机构",
+      "applicableInstitutions": "商业银行、保险公司",
+      "effectiveAt": "2026-01-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "corpus/02-shanghai-regulation-demo.md",
+      "title": "上海地区监管规定（演示）",
+      "docType": "REGULATION",
+      "jurisdiction": "上海",
+      "issuer": "演示监管机构上海监管局",
+      "applicableInstitutions": "上海地区商业银行",
+      "effectiveAt": "2026-03-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "corpus/03-internal-policy-demo.md",
+      "title": "银行内部合规制度（演示）",
+      "docType": "INTERNAL_POLICY",
+      "jurisdiction": "全国",
+      "issuer": "演示银行总行",
+      "applicableInstitutions": "演示银行各分支机构",
+      "effectiveAt": "2026-02-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "corpus/04-product-terms-demo.md",
+      "title": "重疾险产品条款（演示）",
+      "docType": "PRODUCT_TERMS",
+      "jurisdiction": "全国",
+      "issuer": "演示保险公司",
+      "applicableInstitutions": "购买演示重疾险产品的个人客户",
+      "effectiveAt": "2026-04-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "corpus/05-operating-guideline-demo.md",
+      "title": "分行合规操作指引（演示）",
+      "docType": "GUIDELINE",
+      "jurisdiction": "上海",
+      "issuer": "演示银行上海分行",
+      "applicableInstitutions": "上海分行运营与合规岗位",
+      "effectiveAt": "2026-05-01",
+      "expiresAt": null,
+      "repealed": false
+    }
+  ],
+  "newVersion": {
+    "file": "corpus/06-national-regulation-v2-demo.md",
+    "baseFile": "corpus/01-national-regulation-demo.md",
+    "title": "全国适用监管规定 2026 年修订版（演示）",
+    "docType": "REGULATION",
+    "jurisdiction": "全国",
+    "issuer": "演示监管机构",
+    "applicableInstitutions": "商业银行、保险公司",
+    "effectiveAt": "2026-12-01",
+    "expiresAt": null,
+    "repealed": false
+  },
+  "edgeCases": [
+    {
+      "file": "edge-cases/expired-demo.md",
+      "title": "已失效监管规定（演示）",
+      "docType": "REGULATION",
+      "jurisdiction": "全国",
+      "issuer": "演示监管机构",
+      "applicableInstitutions": "商业银行",
+      "effectiveAt": "2024-01-01",
+      "expiresAt": "2025-12-31",
+      "repealed": false
+    },
+    {
+      "file": "edge-cases/unconfirmed-demo.md",
+      "title": "效力待确认制度（演示）",
+      "docType": "INTERNAL_POLICY",
+      "jurisdiction": "全国",
+      "issuer": "演示银行总行",
+      "applicableInstitutions": "演示银行各分支机构",
+      "effectiveAt": null,
+      "expiresAt": null,
+      "repealed": false
+    }
+  ]
+}
