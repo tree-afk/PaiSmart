@@ -34,9 +34,10 @@ export function createRouteGuard(router: Router) {
     const isLogin = Boolean(localStg.get('token'));
     const needLogin = !to.meta.constant;
     const routeRoles = to.meta.roles || [];
-
-    const hasRole = routeRoles.includes(authStore.userInfo.role);
-    const hasAuth = authStore.isStaticSuper || !routeRoles.length || hasRole;
+    const hasRouteRole = !routeRoles.length || routeRoles.includes(authStore.userInfo.role);
+    // 知识库管理页只对管理员开放；直接绑定路由名，避免 elegant-router 重新生成时丢掉 roles 元数据
+    const adminOnlyRoute = to.name === 'knowledge-base';
+    const hasAuth = hasRouteRole && (!adminOnlyRoute || authStore.userInfo.role === 'ADMIN');
 
     // if it is login route when logged in, then switch to the root page
     if (to.name === loginRoute && isLogin) {

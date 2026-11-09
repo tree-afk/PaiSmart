@@ -2,12 +2,14 @@ package com.yizhaoqi.smartpai.consumer;
 
 import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
+import com.yizhaoqi.smartpai.model.DocumentBuildContext;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
 import com.yizhaoqi.smartpai.service.UploadService;
 import com.yizhaoqi.smartpai.service.VectorizationService;
 import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
+import com.yizhaoqi.smartpai.service.document.DocumentBuildService;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLease;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseLostException;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseService;
@@ -34,6 +36,7 @@ public class FileProcessingConsumer {
     private final DocumentService documentService;
     private final VectorizationLeaseService leaseService;
     private final UploadService uploadService;
+    private final DocumentBuildService buildService;
     @Autowired
     private KafkaConfig kafkaConfig;
     @Autowired(required = false)
@@ -45,13 +48,15 @@ public class FileProcessingConsumer {
             VectorizationService vectorizationService,
             DocumentService documentService,
             VectorizationLeaseService leaseService,
-            UploadService uploadService
+            UploadService uploadService,
+            DocumentBuildService buildService
     ) {
         this.parseService = parseService;
         this.vectorizationService = vectorizationService;
         this.documentService = documentService;
         this.leaseService = leaseService;
         this.uploadService = uploadService;
+        this.buildService = buildService;
     }
 
     // id 供 FileProcessingListenerGate 在堆内存背压 / 索引切换时暂停、恢复消费
@@ -63,53 +68,181 @@ public class FileProcessingConsumer {
         log.info("文件权限信息: userId={}, orgTag={}, isPublic={}", 
                 task.getUserId(), task.getOrgTag(), task.isPublic());
 
+        String buildId = normalizeBuildId(task);
+        // 构建已就绪或已到终态：迟到/重复的消息不认领、不改文件状态，文件由恢复任务按构建结果收尾
+        if (buildId != null && buildService.shouldSkipProcessing(buildService.statusOf(buildId))) {
+            log.warn("构建已处于就绪或终态，跳过本次处理且不改写文件状态: buildId={}, fileMd5={}",
+                    buildId, task.getFileMd5());
+            return;
+        }
+
         // 认领：上传任务已完成直接跳过（Kafka 重复投递），已有消费者在处理且心跳未超时也跳过
         Optional<VectorizationLease> claimed = leaseService.claim(task);
         if (claimed.isEmpty()) {
             return;
         }
         VectorizationLease lease = claimed.get();
+        DocumentBuildContext buildContext = buildId == null
+                ? null
+                : new DocumentBuildContext(task.getDocumentId(), task.getVersionId(), buildId,
+                        task.getVersionNo(), task.getBuildNo(), task.complianceMetadata());
 
-        try (InputStream fileStream = openSourceStream(task)) {
-            // 先清理上一次处理留下的分块和索引，重复投递、中途失败重试都从干净状态重新解析，不会插入重复分块
-            documentService.clearIndexedData(task.getFileMd5());
+        try {
+            // 只有 PENDING → PROCESSING 的构建才能写入；预检后构建被并发改成就绪/终态时直接跳过，
+            // 不打开文件、不重新解析，也不改写构建状态，只结束文件租约
+            if (buildContext != null && !buildService.markProcessing(buildId)) {
+                log.warn("构建已处于就绪或终态，跳过本次处理且不改写文件状态: buildId={}, fileMd5={}",
+                        buildId, task.getFileMd5());
+                leaseService.release(lease);
+                return;
+            }
 
-            parseService.parseAndSave(task.getFileMd5(), fileStream,
-                    task.getUserId(), task.getOrgTag(), task.isPublic());
-            log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
-            leaseService.heartbeat(lease);
+            try (InputStream fileStream = openSourceStream(task)) {
+                if (buildContext == null) {
+                    // 旧任务：先清理上一次处理留下的分块和索引，重复投递、中途失败重试都从干净状态重新解析
+                    documentService.clearIndexedData(task.getFileMd5());
+                } else {
+                    documentService.clearBuildData(buildId);
+                }
 
-            String requesterId = task.getRequesterId() == null || task.getRequesterId().isBlank()
-                    ? task.getUserId()
-                    : task.getRequesterId();
-            VectorizationService.VectorizationUsageResult vectorizationResult = vectorizationService.vectorizeWithUsage(
-                    task.getFileMd5(),
-                    task.getUserId(),
-                    task.getOrgTag(),
-                    task.isPublic(),
-                    requesterId,
-                    () -> leaseService.heartbeat(lease)
-            );
-            if (leaseService.complete(lease, vectorizationResult)) {
-                log.info("向量化完成，fileMd5: {}", task.getFileMd5());
-                publishVectorized(task.getFileMd5());
+                if (buildContext == null) {
+                    parseService.parseAndSave(task.getFileMd5(), fileStream,
+                            task.getUserId(), task.getOrgTag(), task.isPublic());
+                } else {
+                    parseService.parseAndSave(task.getFileMd5(), fileStream,
+                            task.getUserId(), task.getOrgTag(), task.isPublic(), buildContext);
+                }
+                log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
+                leaseService.heartbeat(lease);
+
+                String requesterId = task.getRequesterId() == null || task.getRequesterId().isBlank()
+                        ? task.getUserId()
+                        : task.getRequesterId();
+                VectorizationService.VectorizationUsageResult vectorizationResult = buildContext == null
+                        ? vectorizationService.vectorizeWithUsage(
+                                task.getFileMd5(),
+                                task.getUserId(),
+                                task.getOrgTag(),
+                                task.isPublic(),
+                                requesterId,
+                                () -> leaseService.heartbeat(lease))
+                        : vectorizationService.vectorizeWithUsage(
+                                task.getFileMd5(),
+                                task.getUserId(),
+                                task.getOrgTag(),
+                                task.isPublic(),
+                                requesterId,
+                                buildContext,
+                                () -> leaseService.heartbeat(lease));
+                if (buildContext == null) {
+                    completeLegacy(task, lease, vectorizationResult);
+                } else {
+                    completeBuild(task, buildId, lease, vectorizationResult);
+                }
             }
         } catch (VectorizationLeaseLostException e) {
-            // 任务已被定时任务改回待处理并重新投递，交给新的认领者，这条消息正常提交
+            // 任务已被定时任务改回待处理并重新投递，交给新的认领者，这条消息正常提交；
+            // 构建仍保持 PROCESSING，由文件租约恢复任务重投同一 build
             log.warn("向量化认领已失效，放弃本次处理: fileMd5={}", task.getFileMd5());
         } catch (Exception e) {
             if (isInsufficientBalance(e)) {
-                // 余额不足重试多少次结果都一样，每次重试还要重新解析整份文件、占住消费线程，直接标记失败并提交消息
+                // 余额不足重试多少次结果都一样，每次重试还要重新解析整份文件、占住消费线程：
+                // 构建与文件都标失败并提交消息，不再重试
+                if (buildContext != null) {
+                    markBuildFailed(buildContext.buildId(), e);
+                }
                 leaseService.fail(lease, e);
                 log.warn("用户余额不足，向量化失败且不重试: fileMd5={}, userId={}, reason={}",
                         task.getFileMd5(), task.getUserId(), e.getMessage());
                 return;
             }
+            // 可重试异常（解析 / 向量化 / MinIO / ES 清理等）：构建保持 PROCESSING，不提前标 FAILED；
+            // 文件租约虽然写成 FAILED，但 claimVectorization 只拒绝 PROCESSING 且要求心跳未超时，
+            // 下一次投递仍能重新认领。抛出交给 Kafka 重试，重试耗尽由死信消费者兜底标构建失败
             leaseService.fail(lease, e);
-            log.error("Error processing task: {}", task, e);
-            // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
+            log.error("文件处理失败，构建保持 PROCESSING 等待 Kafka 重试: buildId={}, fileMd5={}",
+                    buildContext == null ? null : buildContext.buildId(), task.getFileMd5(), e);
             throw new RuntimeException("Error processing task", e);
         }
+    }
+
+    /**
+     * 旧任务：文件租约写完成状态后才算成功，成功后才发布向量化完成事件
+     */
+    private void completeLegacy(FileProcessingTask task,
+                                VectorizationLease lease,
+                                VectorizationService.VectorizationUsageResult result) {
+        if (!leaseService.complete(lease, result)) {
+            log.warn("向量化完成但认领已失效，不写完成状态: fileMd5={}", task.getFileMd5());
+            return;
+        }
+        log.info("向量化完成，fileMd5: {}, chunkCount: {}", task.getFileMd5(), result.actualChunkCount());
+        publishVectorized(task.getFileMd5(), task.getDocumentId());
+    }
+
+    /**
+     * 构建任务收尾：核对分块数 → 标 READY → 写文件完成 → 切换。
+     * 核对失败把构建与文件都标失败；切换异常只保留 READY 交给恢复任务重试，绝不把已就绪的构建标 FAILED
+     */
+    private void completeBuild(FileProcessingTask task,
+                               String buildId,
+                               VectorizationLease lease,
+                               VectorizationService.VectorizationUsageResult result) {
+        int chunkCount = result.actualChunkCount();
+        if (!buildService.chunkCountMatches(buildId, chunkCount)) {
+            markBuildFailed(buildId, "分块数核对失败");
+            leaseService.fail(lease, new IllegalStateException("分块数核对失败"));
+            log.warn("构建分块数核对失败，构建与文件已标记失败，旧 active 保持不变: buildId={}, expected={}",
+                    buildId, chunkCount);
+            return;
+        }
+        boolean ready = buildService.markReady(buildId, chunkCount);
+        if (!ready) {
+            log.warn("构建未能进入 READY（可能已被取消），不切换: buildId={}", buildId);
+        }
+        if (!leaseService.complete(lease, result)) {
+            // 认领已失效：不切换构建，READY 由 DocumentBuildRecoveryJob 兜底切换
+            log.warn("向量化完成但认领已失效，不切换构建: buildId={}, fileMd5={}", buildId, task.getFileMd5());
+            return;
+        }
+        log.info("向量化完成，fileMd5: {}, chunkCount: {}", task.getFileMd5(), chunkCount);
+        if (!ready) {
+            return;
+        }
+        DocumentBuildService.BuildActivation activation = null;
+        try {
+            activation = buildService.activate(buildId);
+            log.info("构建分块数核对通过，切换结果: buildId={}, chunkCount={}, activation={}",
+                    buildId, chunkCount, activation);
+        } catch (Exception e) {
+            log.warn("构建切换失败，保持 READY 等待恢复任务重试: buildId={}", buildId, e);
+        }
+        if (activation == DocumentBuildService.BuildActivation.ACTIVE) {
+            publishVectorized(task.getFileMd5(), task.getDocumentId());
+        }
+    }
+
+    private void markBuildFailed(String buildId, String error) {
+        try {
+            buildService.markFailed(buildId, error);
+        } catch (Exception markingError) {
+            log.warn("标记构建失败时出错，忽略: buildId={}, error={}", buildId, markingError.getMessage());
+        }
+    }
+
+    /**
+     * 入库失败时把构建标 FAILED；标记本身失败只记日志，不影响文件租约和 Kafka 重试
+     */
+    private void markBuildFailed(String buildId, Exception cause) {
+        markBuildFailed(buildId, cause.getMessage());
+    }
+
+    /**
+     * 空白 buildId 按 legacy 任务处理，与 outbox 消息 key 的口径保持一致
+     */
+    private static String normalizeBuildId(FileProcessingTask task) {
+        String buildId = task.getBuildId();
+        return buildId == null || buildId.isBlank() ? null : buildId;
     }
 
     private static boolean isInsufficientBalance(Throwable error) {
@@ -124,12 +257,12 @@ public class FileProcessingConsumer {
     /**
      * 通知冲突检测等后置任务。后置任务异步执行，这里任何异常都不能影响入库结果和 Kafka 提交。
      */
-    private void publishVectorized(String fileMd5) {
+    private void publishVectorized(String fileMd5, String documentId) {
         if (eventPublisher == null) {
             return;
         }
         try {
-            eventPublisher.publishEvent(new DocumentVectorizedEvent(fileMd5));
+            eventPublisher.publishEvent(new DocumentVectorizedEvent(fileMd5, documentId));
         } catch (Exception e) {
             log.warn("发布向量化完成事件失败，忽略: fileMd5={}, error={}", fileMd5, e.getMessage());
         }

@@ -57,8 +57,8 @@ export const generatedRoutes: GeneratedRoute[] = [
     meta: {
       title: 'chat-history',
       i18nKey: 'route.chat-history',
-      roles: ['ADMIN'],
       icon: 'solar:hashtag-chat-broken',
+      roles: ['ADMIN'],
       order: 2
     }
   },
@@ -95,6 +95,7 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'knowledge-base',
       i18nKey: 'route.knowledge-base',
       icon: 'solar:folder-line-duotone',
+      roles: ['ADMIN'],
       order: 3
     }
   },

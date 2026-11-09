@@ -7,10 +7,27 @@ import { UploadStatus } from '@/enum';
 import SvgIcon from '@/components/custom/svg-icon.vue';
 import FilePreview from '@/components/custom/file-preview.vue';
 import UploadDialog from './modules/upload-dialog.vue';
+import MetadataDialog from './modules/metadata-dialog.vue';
 import SearchDialog from './modules/search-dialog.vue';
 
 const appStore = useAppStore();
 const authStore = useAuthStore();
+
+// 与后端 DocumentComplianceType 的枚举名保持一致
+const docTypeLabels: Record<string, string> = {
+  REGULATION: '监管规定',
+  INTERNAL_POLICY: '内部制度',
+  PRODUCT_TERMS: '产品条款',
+  GUIDELINE: '操作指引'
+};
+
+const validityMeta: Record<string, { label: string; tagType: 'default' | 'info' | 'success' | 'warning' | 'error' }> = {
+  UNCONFIRMED: { label: '效力待确认', tagType: 'warning' },
+  PENDING: { label: '待生效', tagType: 'info' },
+  EFFECTIVE: { label: '已到生效日期', tagType: 'success' },
+  EXPIRED: { label: '已失效', tagType: 'default' },
+  REPEALED: { label: '已废止', tagType: 'error' }
+};
 
 // 文件预览相关状态
 const previewVisible = ref(false);
@@ -44,8 +61,24 @@ async function apiFn(params: Api.Common.CommonSearchParams = {}): Promise<FlatRe
   };
 }
 
-function canManageFile(row: Api.KnowledgeBase.UploadTask) {
-  return authStore.isAdmin || String(row.userId) === String(authStore.userInfo.id);
+function canManageFile(_row: Api.KnowledgeBase.UploadTask) {
+  return authStore.isAdmin;
+}
+
+function renderPublicationButton(row: Api.KnowledgeBase.UploadTask) {
+  if (!canManageFile(row) || !row.documentId) return null;
+  if (row.publicationStatus === 'WITHDRAWN') {
+    return (
+      <NButton quaternary size="small" onClick={() => handleRestore(row)}>
+        恢复发布
+      </NButton>
+    );
+  }
+  return (
+    <NButton quaternary size="small" onClick={() => handleWithdraw(row)}>
+      下架
+    </NButton>
+  );
 }
 
 function renderIcon(fileName: string) {
@@ -95,6 +128,97 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
       )
     },
     {
+      key: 'docType',
+      title: '文档类型',
+      width: 110,
+      render: row => {
+        const label = row.docType ? docTypeLabels[row.docType] : '';
+        if (label) {
+          return (
+            <NTag bordered={false} type="info">
+              {label}
+            </NTag>
+          );
+        }
+        return <span class="text-muted text-xs">{row.docType || '-'}</span>;
+      }
+    },
+    {
+      key: 'versionNo',
+      title: '版本',
+      width: 80,
+      render: row => (row.versionNo ? `v${row.versionNo}` : '-')
+    },
+    {
+      key: 'publicationStatus',
+      title: '发布状态',
+      width: 110,
+      render: row => {
+        const map: Record<string, { label: string; type: 'default' | 'success' | 'warning' }> = {
+          DRAFT: { label: '待处理', type: 'warning' },
+          PUBLISHED: { label: '已发布', type: 'success' },
+          WITHDRAWN: { label: '已下架', type: 'default' }
+        };
+        const meta = row.publicationStatus ? map[row.publicationStatus] : undefined;
+        return meta ? (
+          <NTag bordered={false} type={meta.type}>
+            {meta.label}
+          </NTag>
+        ) : (
+          <span class="text-muted text-xs">-</span>
+        );
+      }
+    },
+    {
+      key: 'jurisdiction',
+      title: '适用地区',
+      width: 120,
+      ellipsis: { tooltip: true },
+      render: row => row.jurisdiction || '-'
+    },
+    {
+      key: 'issuer',
+      title: '发布机构',
+      width: 160,
+      ellipsis: { tooltip: true },
+      render: row => row.issuer || '-'
+    },
+    {
+      key: 'applicableInstitutions',
+      title: '适用机构',
+      width: 160,
+      ellipsis: { tooltip: true },
+      render: row => row.applicableInstitutions || '-'
+    },
+    {
+      key: 'validityStatus',
+      title: '效力状态',
+      width: 120,
+      render: row => {
+        const meta = row.validityStatus ? validityMeta[row.validityStatus] : undefined;
+        if (meta) {
+          return (
+            <NTag bordered={false} type={meta.tagType}>
+              {meta.label}
+            </NTag>
+          );
+        }
+        return <span class="text-muted text-xs">{row.validityLabel || '-'}</span>;
+      }
+    },
+    {
+      key: 'effectiveAt',
+      title: '生效日期',
+      width: 110,
+      render: row => (row.effectiveAt ? dayjs(row.effectiveAt).format('YYYY-MM-DD') : '-')
+    },
+    {
+      key: 'expiresAt',
+      title: '失效日期',
+      width: 110,
+      render: row => (row.expiresAt ? dayjs(row.expiresAt).format('YYYY-MM-DD') : '-')
+    },
+    {
       key: 'fileMd5',
       title: 'MD5',
       width: 120,
@@ -138,27 +262,6 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
       render: row => renderStatus(row.status, row.progress)
     },
     {
-      key: 'orgTagName',
-      title: '组织标签',
-      width: 150,
-      ellipsis: { tooltip: true, lineClamp: 2 }
-    },
-    {
-      key: 'isPublic',
-      title: '是否公开',
-      width: 100,
-      render: row =>
-        row.public || row.isPublic ? (
-          <NTag bordered={false} type="success">
-            公开
-          </NTag>
-        ) : (
-          <NTag bordered={false} type="warning">
-            私有
-          </NTag>
-        )
-    },
-    {
       key: 'createdAt',
       title: '上传时间',
       width: 100,
@@ -167,13 +270,24 @@ const { columns, columnChecks, data, getData, loading, mobilePagination } = useT
     {
       key: 'operate',
       title: '操作',
-      width: 180,
+      width: 420,
       render: row => (
-        <div class="flex gap-4">
+        <div class="flex flex-wrap gap-4">
           {canManageFile(row) ? renderResumeUploadButton(row) : null}
           <NButton type="primary" quaternary size="small" onClick={() => handleFilePreview(row.fileName, row.fileMd5)}>
             预览
           </NButton>
+          {canManageFile(row) && row.documentId ? (
+            <NButton quaternary size="small" onClick={() => handleEditMetadata(row)}>
+              资料信息
+            </NButton>
+          ) : null}
+          {canManageFile(row) && row.documentId ? (
+            <NButton quaternary size="small" onClick={() => handleNewVersion(row)}>
+              新版本
+            </NButton>
+          ) : null}
+          {renderPublicationButton(row)}
           {canManageFile(row) ? (
             <NPopconfirm onPositiveClick={() => handleDelete(row.fileMd5)}>
               {{
@@ -229,7 +343,20 @@ function syncTaskFromServer(target: Api.KnowledgeBase.UploadTask, source: Api.Kn
     actualEmbeddingTokens: source.actualEmbeddingTokens,
     actualChunkCount: source.actualChunkCount,
     vectorizationStatus: source.vectorizationStatus,
-    vectorizationErrorMessage: source.vectorizationErrorMessage
+    vectorizationErrorMessage: source.vectorizationErrorMessage,
+    documentId: source.documentId,
+    versionId: source.versionId,
+    versionNo: source.versionNo,
+    docType: source.docType,
+    jurisdiction: source.jurisdiction,
+    jurisdictionCode: source.jurisdictionCode,
+    issuer: source.issuer,
+    applicableInstitutions: source.applicableInstitutions,
+    effectiveAt: source.effectiveAt,
+    expiresAt: source.expiresAt,
+    repealed: source.repealed,
+    validityStatus: source.validityStatus,
+    validityLabel: source.validityLabel
   });
 }
 
@@ -275,8 +402,51 @@ async function handleDelete(fileMd5: string) {
 
 // #region 文件上传
 const uploadVisible = ref(false);
+const newVersionDocumentId = ref<string | null>(null);
+const metadataVisible = ref(false);
+const metadataRow = ref<Api.KnowledgeBase.UploadTask | null>(null);
+
 function handleUpload() {
+  newVersionDocumentId.value = null;
   uploadVisible.value = true;
+}
+
+function handleNewVersion(row: Api.KnowledgeBase.UploadTask) {
+  if (!row.documentId) {
+    window.$message?.error('该资料还没有业务文档 ID，不能上传新版本');
+    return;
+  }
+  newVersionDocumentId.value = row.documentId;
+  uploadVisible.value = true;
+}
+
+function handleEditMetadata(row: Api.KnowledgeBase.UploadTask) {
+  if (!row.documentId) {
+    window.$message?.error('该资料还没有业务文档 ID，不能修订元数据');
+    return;
+  }
+  metadataRow.value = row;
+  metadataVisible.value = true;
+}
+
+async function handleWithdraw(row: Api.KnowledgeBase.UploadTask) {
+  if (!row.documentId) return;
+  const { error } = await request({ url: `/documents/${row.documentId}/withdraw`, method: 'post' });
+  if (error) return;
+  window.$message?.success('资料已下架');
+  await getList();
+}
+
+async function handleRestore(row: Api.KnowledgeBase.UploadTask) {
+  if (!row.documentId) return;
+  const { error } = await request({ url: `/documents/${row.documentId}/restore-publication`, method: 'post' });
+  if (error) return;
+  window.$message?.success('资料已恢复发布');
+  await getList();
+}
+
+async function handleMetadataSaved() {
+  await getList();
 }
 // #endregion
 
@@ -604,7 +774,7 @@ async function onBeforeUpload(
         :data="tableTasks"
         size="small"
         :flex-height="!appStore.isMobile"
-        :scroll-x="962"
+        :scroll-x="1900"
         :loading="loading"
         remote
         :row-key="row => row.id"
@@ -612,7 +782,8 @@ async function onBeforeUpload(
         class="sm:h-full"
       />
     </NCard>
-    <UploadDialog v-model:visible="uploadVisible" />
+    <UploadDialog v-model:visible="uploadVisible" :document-id="newVersionDocumentId" />
+    <MetadataDialog v-model:visible="metadataVisible" :row="metadataRow" @saved="handleMetadataSaved" />
     <SearchDialog v-model:visible="searchVisible" />
 
     <!-- 文件预览弹窗 -->

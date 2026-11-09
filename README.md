@@ -211,6 +211,15 @@ frontend/
 - 另起一次 LLM 调用做评委，对照参考答案和检索证据输出 `{"score": 1-5, "correct": true/false, "reason": "..."}`。评委提示词把所有字段当作数据，不因回答更长而加分；输出解析失败的用例，以及检索没召回答案分块、评委却判对的用例（`MISS_BUT_CORRECT`，人工校准发现评委在这类用例上偏宽松）一律标记人工复核，另按 `eval.human-review-sample-rate` 随机抽样人工复核。
 - 推理模型的思考过程也计入 `max_tokens`，预算用完时回答为空；生成和评委输出为空时都会重试一次，因长度截断（`finish_reason=length`）的把预算翻倍。报告的 `config.llm` 记录本次用的主模型。
 - 报告给出 Recall@K、MRR、评委平均分、准确率和问题归因：`PROMPT_OR_MODEL`（检索命中但回答错，查提示词或模型），`RETRIEVAL_MISS`（检索未命中，查分块和检索），以及逐条明细。报告以 JSON 写入 `eval.output-dir`，文件名带 `label`，调整分块前后各跑一次、用不同 label 区分即可对比。
+- 报告新增 `latency`（总耗时及检索/生成/评委的 P50/P95、降级模式占比）和 `citation`（每条回答的引用条数、可溯源率、引用分块命中期望证据的相关率）。引用指标是确定性代理口径，不替代 LLM 或人工的语义支撑判断。
+- 发布前可用 `python scripts/eval_gate.py --report <新报告> --baseline <基线报告>` 做门禁：Recall@5 / MRR 下降超过 3 个百分点、评委准确率下降超过 5 个百分点、出现基线之外的失败用例、兜底率超过 20% 或用例数少于 30 时退出码为 1；用法见 `scripts/DEPLOY.md`。
+
+**badcase 回流**：前端反馈和模型调用 `submit_feedback` 都会写入 MySQL 表 `answer_feedback`，提交时按 `conversationId` 快照最近一条问题和回答。管理员接口（`/api/v1/admin/feedback`）：
+
+- `GET /api/v1/admin/feedback?status=NEW&page=1&size=20` 分页查看反馈；
+- `POST /api/v1/admin/feedback/{id}/status`，请求体 `{"status": "REVIEWED", "note": "..."}`；
+- `POST /api/v1/admin/feedback/{id}/convert`，请求体 `{"referenceAnswer": "...", "expectedFileNames": ["..."], "expectedEvidence": ["..."]}`，补 gold 后追加一行到 `eval.dataset-dir/badcase-YYYY-MM-DD.jsonl`，状态改为 `CONVERTED`；
+- `GET /api/v1/admin/feedback/export?status=CONVERTED` 导出已转换的 JSONL，可直接作为下一次评测的数据集。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |

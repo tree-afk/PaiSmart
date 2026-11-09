@@ -143,10 +143,11 @@ public class FileProcessingOutboxService {
         try {
             FileProcessingTask task = objectMapper.readValue(outbox.getPayload(), FileProcessingTask.class);
             long timeoutSeconds = Math.max(properties.getOutbox().getSendTimeoutSeconds(), 1L);
-            // 以 fileMd5 作为消息 key：同一个文件的任务落在同一分区，按投递顺序处理
+            // 以 buildId 作为消息 key（旧任务没有构建信息时退回 fileMd5）：同一个构建的任务落在同一分区按投递顺序处理
+            String key = messageKey(task);
             kafkaTemplate.executeInTransaction(operations -> {
                 try {
-                    return operations.send(kafkaConfig.getFileProcessingTopic(), task.getFileMd5(), task)
+                    return operations.send(kafkaConfig.getFileProcessingTopic(), key, task)
                             .get(timeoutSeconds, TimeUnit.SECONDS);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -203,6 +204,14 @@ public class FileProcessingOutboxService {
         } catch (Exception e) {
             throw new IllegalStateException("序列化文件处理任务失败: " + task.getFileMd5(), e);
         }
+    }
+
+    /**
+     * Kafka 消息 key：有构建标识时按 buildId 分区，保证同一构建的顺序；旧任务退回 fileMd5
+     */
+    String messageKey(FileProcessingTask task) {
+        String buildId = task.getBuildId();
+        return buildId == null || buildId.isBlank() ? task.getFileMd5() : buildId;
     }
 
     private static String truncate(String message) {

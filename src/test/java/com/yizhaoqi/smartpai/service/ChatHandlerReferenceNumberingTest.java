@@ -50,7 +50,7 @@ class ChatHandlerReferenceNumberingTest {
                 new AgentToolRegistry.ToolExecutionResult("search_knowledge", true, "",
                         Map.of("results", List.of(first, second))));
 
-        assertTrue(content.contains("[1] manual.pdf (fileMd5=md5, chunkId=3, page=2, score=0.9000)\n上下文（命中分块及前后相邻内容）：\n" + parent),
+        assertTrue(content.contains("[1] manual.pdf (fileMd5=md5, chunkId=3, key=md5#3, page=2, score=0.9000)\n上下文（命中分块及前后相邻内容）：\n" + parent),
                 "第一个命中给出父块");
         assertTrue(content.contains("[2] manual.pdf"));
         assertTrue(content.contains("（该分块所在的上下文已在 [1] 中给出）"), "共用的父块只发一次");
@@ -59,6 +59,31 @@ class ChatHandlerReferenceNumberingTest {
                 "引用详情仍是命中的小分块");
         assertEquals(3, handler.getReferenceDetail("generation", 2).pageNumber());
         assertEquals(4, handler.getReferenceDetail("generation", 2).chunkId());
+    }
+
+    @Test
+    void referenceDetailCarriesClauseMetadataWithoutChangingNumbering() {
+        ChatGenerationStateService state = mock(ChatGenerationStateService.class);
+        ChatHandler handler = new ChatHandler(null, null, null, null, null, state,
+                null, null, null, null, null, null);
+        SearchResult first = new SearchResult("md5", 1, "第十二条 银行应当建立制度。", 0.9, "regulation.pdf");
+        first.setArticlePath("第二章 风险管理 > 第十二条");
+        first.setClauseNo("第十二条第二款");
+        SearchResult withParent = first.withParentContext("上下文内容", "md5#1-2");
+        SearchResult second = new SearchResult("md5-2", 2, "其他内容", 0.8, "other.pdf");
+
+        String content = handler.appendReferencesFromSearchTool("generation", "条款要求",
+                new AgentToolRegistry.ToolExecutionResult("search_knowledge", true, "",
+                        Map.of("results", List.of(withParent, second))));
+
+        assertTrue(content.contains("[1] regulation.pdf"));
+        assertTrue(content.contains("article=第二章 风险管理 > 第十二条"));
+        assertTrue(content.contains("clause=第十二条第二款"));
+        assertEquals("第二章 风险管理 > 第十二条", handler.getReferenceDetail("generation", 1).articlePath(),
+                "父块扩展后的引用详情仍带条款路径");
+        assertEquals("第十二条第二款", handler.getReferenceDetail("generation", 1).clauseNo());
+        assertEquals("md5-2", handler.getReferenceDetail("generation", 2).fileMd5(),
+                "新增字段不影响原有引用编号");
     }
 
     private static AgentToolRegistry.ToolExecutionResult result(SearchResult result) {

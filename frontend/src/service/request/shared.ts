@@ -4,6 +4,8 @@ import { fetchRefreshToken } from '../api';
 import type { RequestInstanceState } from './type';
 
 const backendMessageMap: Record<string, string> = {
+  Forbidden: '无权访问该内容或执行此操作',
+  'Request failed with status code 403': '无权访问该内容或执行此操作',
   INVITE_CODE_REQUIRED: '请输入邀请码',
   INVITE_CODE_INVALID: '邀请码不正确，请检查后重试',
   INVITE_CODE_EXPIRED: '邀请码已过期，请重新获取',

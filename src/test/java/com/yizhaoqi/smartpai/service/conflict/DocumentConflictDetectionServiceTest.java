@@ -41,7 +41,7 @@ class DocumentConflictDetectionServiceTest {
 
     @Test
     void scanFailureIsSwallowedSoIngestionIsNotAffected() throws Exception {
-        when(finder.findCandidates("md5")).thenThrow(new RuntimeException("es down"));
+        when(finder.findCandidates("md5", null)).thenThrow(new RuntimeException("es down"));
 
         assertDoesNotThrow(() -> service(Runnable::run).onDocumentVectorized(new DocumentVectorizedEvent("md5")));
         verify(conflictService, never()).recordCandidates(anyList());
@@ -57,12 +57,21 @@ class DocumentConflictDetectionServiceTest {
     @Test
     void candidatesAreRecordedWithoutLlmWhenConfirmDisabled() throws Exception {
         List<ConflictCandidate> candidates = List.of(candidate());
-        when(finder.findCandidates("md5")).thenReturn(candidates);
+        when(finder.findCandidates("md5", null)).thenReturn(candidates);
 
         service(Runnable::run).onDocumentVectorized(new DocumentVectorizedEvent("md5"));
 
         verify(conflictService).recordCandidates(candidates);
         verify(router, never()).completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND));
+    }
+
+    @Test
+    void eventDocumentIdIsPassedToFinder() throws Exception {
+        when(finder.findCandidates("md5", "doc-1")).thenReturn(List.of());
+
+        service(Runnable::run).onDocumentVectorized(new DocumentVectorizedEvent("md5", "doc-1"));
+
+        verify(finder).findCandidates("md5", "doc-1");
     }
 
     @Test

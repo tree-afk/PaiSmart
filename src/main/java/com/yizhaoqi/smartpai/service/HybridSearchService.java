@@ -12,11 +12,17 @@ import com.yizhaoqi.smartpai.config.HybridSearchProperties;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.exception.CustomException;
+import com.yizhaoqi.smartpai.model.ComplianceMetadata;
+import com.yizhaoqi.smartpai.model.ComplianceValidityStatus;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.repository.UserRepository;
 import com.yizhaoqi.smartpai.service.chunk.ContextualChunkText;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScopeService;
+import com.yizhaoqi.smartpai.service.document.ComplianceRetrievalFilter;
+import com.yizhaoqi.smartpai.service.document.ComplianceSearchFilter;
+import com.yizhaoqi.smartpai.service.document.DocumentRetrievalFilter;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.service.search.RrfFusion;
 import com.yizhaoqi.smartpai.utils.RequestDeadline;
@@ -27,6 +33,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -37,11 +44,13 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
  * 混合搜索服务：BM25 与 KNN 两路独立并行召回 → RRF 融合 → rerank 精排 → 按分数阈值截断（topK 只是上限）。
- * 两路召回都带权限过滤，确保用户只能搜到自己的、公开的、所属组织（含层级继承）的文档。
+ * 两路召回都带权限过滤，确保用户只能搜到自己的、公开的、所属组织（含层级继承）的文档；
+ * 同时叠加版本范围过滤和合规过滤（文档类型/地区/现行有效），所有召回与降级路径共用同一份过滤条件。
  * <p>
  * 降级顺序：一路召回失败时用另一路继续走 RRF 和 rerank（模式标为 BM25_ONLY / KNN_ONLY）；rerank 跳过或失败时按 RRF 排序并用
  * RRF 阈值过滤（模式加 _RRF 后缀）；两路都失败才退到纯文本检索（TEXT_ONLY）。
@@ -74,6 +83,7 @@ public class HybridSearchService {
     private final UserRepository userRepository;
     private final OrgTagCacheService orgTagCacheService;
     private final FileUploadRepository fileUploadRepository;
+    private final ActiveRetrievalScopeService activeRetrievalScopeService;
     private final Executor recallExecutor;
 
     public HybridSearchService(ElasticsearchClient esClient,
@@ -84,6 +94,7 @@ public class HybridSearchService {
                                UserRepository userRepository,
                                OrgTagCacheService orgTagCacheService,
                                FileUploadRepository fileUploadRepository,
+                               ActiveRetrievalScopeService activeRetrievalScopeService,
                                @Qualifier("searchRecallExecutor") Executor recallExecutor) {
         this.esClient = esClient;
         this.embeddingClient = embeddingClient;
@@ -93,55 +104,62 @@ public class HybridSearchService {
         this.userRepository = userRepository;
         this.orgTagCacheService = orgTagCacheService;
         this.fileUploadRepository = fileUploadRepository;
+        this.activeRetrievalScopeService = activeRetrievalScopeService;
         this.recallExecutor = recallExecutor;
     }
 
     /**
-     * 带权限过滤的混合搜索（自己的文档、公开文档、所属组织及其上级组织的文档）
+     * 带权限过滤的混合搜索（自己的文档、公开文档、所属组织及其上级组织的文档）；使用默认合规过滤（现行有效）
      */
     public List<SearchResult> searchWithPermission(String query, String userId, int topK) {
-        return search(query, userId, topK, false).results();
+        return searchWithPermission(query, userId, topK, ComplianceSearchFilter.current());
+    }
+
+    /**
+     * 带权限与合规过滤的混合搜索：docType/jurisdiction 精确过滤，且只返回现行有效版本
+     */
+    public List<SearchResult> searchWithPermission(String query, String userId, int topK,
+                                                   ComplianceSearchFilter complianceFilter) {
+        return search(query, userId, topK, false, complianceFilter).results();
     }
 
     /**
      * 与 {@link #searchWithPermission} 相同的检索，额外返回各阶段的中间结果（每一路召回、RRF 候选），供评测分阶段统计
      */
     public SearchTrace searchWithTrace(String query, String userId, int topK) {
-        return search(query, userId, topK, true);
+        return search(query, userId, topK, true, ComplianceSearchFilter.current());
     }
 
-    private SearchTrace search(String query, String userId, int topK, boolean detailed) {
-        logger.debug("开始带权限搜索，查询: {}, 用户ID: {}", query, userId);
-        Query permissionFilter;
-        try {
-            List<String> userEffectiveTags = getUserEffectiveOrgTags(userId);
-            String userDbId = getUserDbId(userId);
-            logger.debug("用户 {} 的数据库ID: {}, 有效组织标签: {}", userId, userDbId, userEffectiveTags);
-            permissionFilter = buildPermissionFilter(userDbId, userEffectiveTags);
-        } catch (Exception e) {
-            logger.error("解析用户权限失败，拒绝搜索: userId={}", userId, e);
-            return SearchTrace.empty();
-        }
+    private SearchTrace search(String query, String userId, int topK, boolean detailed,
+                               ComplianceSearchFilter complianceFilter) {
+        logger.debug("开始共享库搜索，查询: {}, 用户ID: {}, 合规过滤: {}", query, userId, complianceFilter);
+        // 单库模式：不按上传者/组织/公开标记分隔，只保留已发布文档的 active build；
+        // 旧个人文件和未迁入共享库的 legacy 分块由 scopeFilter 统一排除。
+        Query scopeFilter = DocumentRetrievalFilter.build(activeRetrievalScopeService.current());
+        Query complianceQuery = ComplianceRetrievalFilter.build(complianceFilter);
+        Query effectiveFilter = ComplianceRetrievalFilter.combine(null, scopeFilter, complianceQuery);
 
         try {
-            return hybridSearch(query, userId, topK, permissionFilter, detailed);
+            return hybridSearch(query, userId, topK, effectiveFilter, detailed);
         } catch (Exception e) {
-            logger.error("带权限的混合搜索失败，降级为纯文本搜索", e);
-            return SearchTrace.textOnly(safeTextOnlySearch(query, permissionFilter, topK, TEXT_ONLY_MIN_SCORE));
+            logger.error("共享库混合搜索失败，降级为纯文本搜索", e);
+            return SearchTrace.textOnly(safeTextOnlySearch(query, effectiveFilter, topK, TEXT_ONLY_MIN_SCORE));
         }
     }
 
     /**
-     * 原始搜索方法，不包含权限过滤，保留向后兼容性
+     * 共享库模式下只按发布范围、active build 和合规日期过滤；保留旧方法签名供离线评测调用。
      */
     public List<SearchResult> search(String query, int topK) {
-        logger.warn("使用了没有权限过滤的搜索方法，建议使用 searchWithPermission 方法");
+        Query scopeFilter = DocumentRetrievalFilter.build(activeRetrievalScopeService.current());
+        Query effectiveFilter = ComplianceRetrievalFilter.combine(
+                null, scopeFilter, ComplianceRetrievalFilter.build(ComplianceSearchFilter.current()));
         try {
-            return hybridSearch(query, "system", topK, null, false).results();
+            return hybridSearch(query, "system", topK, effectiveFilter, false).results();
         } catch (Exception e) {
             logger.error("混合搜索失败，降级为纯文本搜索", e);
             try {
-                return textOnlySearch(query, null, topK, null);
+                return textOnlySearch(query, effectiveFilter, topK, null);
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
                 throw new RuntimeException("搜索完全失败", fallbackError);
@@ -150,13 +168,31 @@ public class HybridSearchService {
     }
 
     private SearchTrace hybridSearch(String query, String requesterId, int topK, Query filter, boolean detailed) {
+        long totalStart = System.nanoTime();
         // 向量生成失败等同于 KNN 这一路失败，BM25 照常召回
+        long embeddingStart = System.nanoTime();
         List<Float> queryVector = embedToVectorList(query, requesterId);
+        long embeddingMs = elapsedMs(embeddingStart);
         int window = recallWindow(topK);
-        CompletableFuture<List<Hit<EsDocument>>> bm25Future =
-                CompletableFuture.supplyAsync(() -> recall(buildBm25Request(query, filter, window)), recallExecutor);
+        AtomicLong bm25Nanos = new AtomicLong();
+        AtomicLong knnNanos = new AtomicLong();
+        CompletableFuture<List<Hit<EsDocument>>> bm25Future = CompletableFuture.supplyAsync(() -> {
+            long start = System.nanoTime();
+            try {
+                return recall(buildBm25Request(query, filter, window));
+            } finally {
+                bm25Nanos.set(System.nanoTime() - start);
+            }
+        }, recallExecutor);
         CompletableFuture<List<Hit<EsDocument>>> knnFuture = queryVector == null ? null
-                : CompletableFuture.supplyAsync(() -> recall(buildKnnRequest(queryVector, filter, window)), recallExecutor);
+                : CompletableFuture.supplyAsync(() -> {
+                    long start = System.nanoTime();
+                    try {
+                        return recall(buildKnnRequest(queryVector, filter, window));
+                    } finally {
+                        knnNanos.set(System.nanoTime() - start);
+                    }
+                }, recallExecutor);
 
         // 两路共用一个等待截止时间：取召回超时配置和问答请求剩余时间中较小的值
         long deadlineNanos = System.nanoTime()
@@ -172,15 +208,22 @@ public class HybridSearchService {
                     recallMode, bm25.error(), knn.error());
         }
 
+        long rrfStart = System.nanoTime();
         List<RrfFusion.Fused<Hit<EsDocument>>> fused =
                 RrfFusion.fuse(properties.getRrfK(), Hit::id, bm25.hits(), knn.hits());
+        long rrfMs = elapsedMs(rrfStart);
         logger.debug("召回完成: mode={}, window={}, bm25={}, knn={}, fused={}",
                 recallMode, window, bm25.hits().size(), knn.hits().size(), fused.size());
 
+        long rerankStart = System.nanoTime();
         Ranked ranked = rerankAndTruncate(query, fused, topK, recallMode);
+        long rerankMs = elapsedMs(rerankStart);
         attachFileNames(ranked.results());
+        SearchTimings timings = new SearchTimings(embeddingMs, nanosToMillis(bm25Nanos.get()),
+                nanosToMillis(knnNanos.get()), rrfMs, rerankMs, elapsedMs(totalStart));
         if (!detailed) {
-            return new SearchTrace(ranked.results(), List.of(), List.of(), List.of(), ranked.mode(), ranked.thresholdDroppedInTopK());
+            return new SearchTrace(ranked.results(), List.of(), List.of(), List.of(), ranked.mode(),
+                    ranked.thresholdDroppedInTopK(), timings);
         }
         List<SearchResult> candidates = candidates(fused, topK).stream()
                 .map(c -> toSearchResult(c.item().source(), c.score(), recallMode + RRF_SUFFIX))
@@ -191,7 +234,16 @@ public class HybridSearchService {
         all.addAll(bm25Ranked);
         all.addAll(knnRanked);
         attachFileNames(all);
-        return new SearchTrace(ranked.results(), candidates, bm25Ranked, knnRanked, ranked.mode(), ranked.thresholdDroppedInTopK());
+        return new SearchTrace(ranked.results(), candidates, bm25Ranked, knnRanked, ranked.mode(),
+                ranked.thresholdDroppedInTopK(), timings);
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+    }
+
+    private static long nanosToMillis(long nanos) {
+        return TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     /**
@@ -399,23 +451,6 @@ public class HybridSearchService {
                 .size(window));
     }
 
-    /**
-     * 权限过滤：自己的文档 OR 公开文档 OR 组织标签命中（含层级继承后的有效标签）
-     */
-    public static Query buildPermissionFilter(String userDbId, List<String> userEffectiveTags) {
-        return Query.of(q -> q.bool(b -> {
-            b.should(s -> s.term(t -> t.field("userId").value(userDbId)));
-            b.should(s -> s.term(t -> t.field("public").value(true)));
-            if (userEffectiveTags != null && !userEffectiveTags.isEmpty()) {
-                b.should(s -> s.terms(t -> t.field("orgTag")
-                        .terms(tv -> tv.value(userEffectiveTags.stream()
-                                .map(co.elastic.clients.elasticsearch._types.FieldValue::of)
-                                .toList()))));
-            }
-            return b.minimumShouldMatch("1");
-        }));
-    }
-
     private List<SearchResult> safeTextOnlySearch(String query, Query filter, int topK, Double minScore) {
         try {
             return textOnlySearch(query, filter, topK, minScore);
@@ -470,6 +505,28 @@ public class HybridSearchService {
                 doc.getTextContent()
         );
         result.setRawScore(rawScore);
+        result.setDocumentId(doc.getDocumentId());
+        result.setVersionId(doc.getVersionId());
+        result.setBuildId(doc.getBuildId());
+        result.setVersionNo(doc.getVersionNo());
+        // 合规元数据透传到检索结果；效力状态由日期和废止标记派生，避免把“生效日期已到”说成现行有效
+        ComplianceValidityStatus validity = ComplianceValidityStatus.resolve(
+                ComplianceMetadata.parseEffectiveAt(doc.getEffectiveAt()),
+                ComplianceMetadata.parseExpiresAt(doc.getExpiresAt()),
+                doc.isRepealed(),
+                LocalDate.now());
+        result.setDocType(doc.getDocType());
+        result.setJurisdiction(doc.getJurisdiction());
+        result.setJurisdictionCode(doc.getJurisdictionCode());
+        result.setIssuer(doc.getIssuer());
+        result.setApplicableInstitutions(doc.getApplicableInstitutions());
+        result.setEffectiveAt(doc.getEffectiveAt());
+        result.setExpiresAt(doc.getExpiresAt());
+        result.setRepealed(doc.isRepealed());
+        result.setValidityStatus(validity.name());
+        result.setValidityLabel(validity.label());
+        result.setArticlePath(doc.getArticlePath());
+        result.setClauseNo(doc.getClauseNo());
         return result;
     }
 
@@ -563,13 +620,20 @@ public class HybridSearchService {
      * @param bm25Ranked            BM25 这一路的前若干条
      * @param knnRanked             KNN 这一路的前若干条
      * @param thresholdDroppedInTopK 排在前 topK 名、却因为分数低于阈值被丢掉的条数
+     * @param timings               分阶段耗时；旧调用不传时为 null
      */
     public record SearchTrace(List<SearchResult> results,
                               List<SearchResult> candidates,
                               List<SearchResult> bm25Ranked,
                               List<SearchResult> knnRanked,
                               String mode,
-                              int thresholdDroppedInTopK) {
+                              int thresholdDroppedInTopK,
+                              SearchTimings timings) {
+
+        public SearchTrace(List<SearchResult> results, List<SearchResult> candidates, List<SearchResult> bm25Ranked,
+                           List<SearchResult> knnRanked, String mode, int thresholdDroppedInTopK) {
+            this(results, candidates, bm25Ranked, knnRanked, mode, thresholdDroppedInTopK, null);
+        }
 
         static SearchTrace empty() {
             return new SearchTrace(new ArrayList<>(), List.of(), List.of(), List.of(), null, 0);
@@ -578,6 +642,12 @@ public class HybridSearchService {
         static SearchTrace textOnly(List<SearchResult> results) {
             return new SearchTrace(results, List.of(), List.of(), List.of(), MODE_TEXT_ONLY, 0);
         }
+    }
+
+    /**
+     * 检索分阶段耗时；两路召回并行，bm25Ms 和 knnMs 是各自路径耗时，不能相加当总耗时
+     */
+    public record SearchTimings(long embeddingMs, long bm25Ms, long knnMs, long rrfMs, long rerankMs, long totalMs) {
     }
 
     private record Ranked(List<SearchResult> results, String mode, int thresholdDroppedInTopK) {

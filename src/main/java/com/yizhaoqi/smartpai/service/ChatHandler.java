@@ -7,7 +7,9 @@ import com.yizhaoqi.smartpai.service.citation.CitationVerdict;
 import com.yizhaoqi.smartpai.service.citation.CitationVerificationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yizhaoqi.smartpai.entity.SearchResult;
+import com.yizhaoqi.smartpai.exception.InsufficientBalanceException;
 import com.yizhaoqi.smartpai.exception.RateLimitExceededException;
+import com.yizhaoqi.smartpai.service.document.ComplianceSearchFilter;
 import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,9 +17,11 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -33,9 +37,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
-
+import java.util.concurrent.atomic.AtomicReference;
 /**
  * 聊天处理服务
  * 负责处理WebSocket聊天消息和管理对话历史
@@ -50,7 +52,10 @@ public class ChatHandler {
     private static final int MAX_MATCHED_CHUNK_LEN = 800;
     private static final int MAX_EVIDENCE_SNIPPET_LEN = 160;
     private static final int GENERATION_COMPLETION_TIMEOUT_SECONDS = 120;
-    private static final int MAX_REACT_ROUNDS = 4;
+    // 最多 6 轮工具调用，外加 1 轮强制最终回答：每轮都带工具时，6 轮用满后再不带工具收尾。
+    // 复合问题典型情况：plan_question 1 轮 + 每个子问题各 1 轮检索（最多 3 轮）+ report_evidence 1 轮，
+    // 第 6 轮由模型直接给出最终回答
+    private static final int MAX_REACT_ROUNDS = 6;
     private static final int MAX_REACT_TOOL_CALLS = 8;
     private static final int REACT_MAX_COMPLETION_TOKENS = 2000;
     private final RedisTemplate<String, String> redisTemplate;
@@ -72,6 +77,7 @@ public class ChatHandler {
     private final Map<String, CompletableFuture<String>> responseFutures = new ConcurrentHashMap<>();
     // 用于持有正在进行中的 LLM 流，支持主动取消上游请求
     private final Map<String, LlmProviderRouter.StreamHandle> activeStreams = new ConcurrentHashMap<>();
+    private final Map<String, AtomicReference<Runnable>> activeToolCancellations = new ConcurrentHashMap<>();
     // 停止标志 - 简单方案
     private final Map<String, Boolean> stopFlags = new ConcurrentHashMap<>();
     // 用于标记已经取消的生成任务，防止后续又被落成 completed
@@ -81,6 +87,13 @@ public class ChatHandler {
     // 父子检索时模型看到的是父块：引用校验按父块判断是否被支撑，避免把相邻分块里的内容误判为可疑引用。
     // 只在内存里保存到本次生成结束，不写进 ReferenceInfo（引用展示和持久化仍只用命中的小分块）
     private final Map<String, Map<Integer, String>> generationParentContexts = new ConcurrentHashMap<>();
+    // 复合问题的子问题计划与检索命中台账：generationId -> plan
+    private final Map<String, QuestionPlan> generationPlans = new ConcurrentHashMap<>();
+
+    /**
+     * 最近一次 search_knowledge 的合规过滤条件：generate_summary 默认沿用，避免摘要重新检索时扩大范围。
+     */
+    private final Map<String, ComplianceSearchFilter> generationComplianceFilters = new ConcurrentHashMap<>();
 
     public ChatHandler(RedisTemplate<String, String> redisTemplate,
                       HybridSearchService searchService,
@@ -238,9 +251,35 @@ public class ChatHandler {
         } catch (Exception e) {
             logger.error("ReAct 循环执行失败: generationId={}", generationId, e);
             chatGenerationStateService.markFailed(generationId, e.getMessage());
+            persistFailedConversation(userId, userMessage, conversationId, generationId, e);
             handleError(userId, generationId, e);
             sendCompletionNotification(userId, generationId, conversationId, true, false);
             cleanupGenerationState(generationId, e);
+        }
+    }
+
+    /**
+     * 失败轮次也写入历史：只持久化成功轮次会让用户切页后连自己提过的问题都看不到。
+     * 已回答过部分内容时保留部分内容并标注中断原因。
+     */
+    private void persistFailedConversation(String userId, String userMessage, String conversationId,
+                                           String generationId, Throwable error) {
+        if (conversationId == null || conversationId.isBlank() || isGenerationCancelled(generationId)) {
+            return;
+        }
+        StringBuilder builder = responseBuilders.get(generationId);
+        String partial = builder == null ? "" : builder.toString();
+        String reason = userFacingErrorMessage(error);
+        String answer = partial.isBlank()
+                ? "本次回答未能生成：" + reason
+                : partial + "\n\n（回答中断：" + reason + "）";
+        try {
+            conversationService.recordConversation(Long.parseLong(userId), userMessage, answer, conversationId, null);
+            logger.info("失败轮次已持久化: userId={}, conversationId={}, generationId={}",
+                    userId, conversationId, generationId);
+        } catch (Exception e) {
+            logger.error("持久化失败轮次失败: userId={}, conversationId={}, generationId={}",
+                    userId, conversationId, generationId, e);
         }
     }
 
@@ -283,6 +322,7 @@ public class ChatHandler {
             totalCompletionTokens += turn.completionTokens();
 
             if (turn.toolCalls().isEmpty()) {
+                appendEvidenceFooterIfNeeded(userId, generationId, conversationId, responseBuilders.get(generationId));
                 finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                         responseBuilders.get(generationId),
                         new LlmProviderRouter.StreamCompletion(turn.finishReason(), totalPromptTokens, totalCompletionTokens, turn.content().length()));
@@ -333,6 +373,7 @@ public class ChatHandler {
         }
         totalPromptTokens += finalTurn.promptTokens();
         totalCompletionTokens += finalTurn.completionTokens();
+        appendEvidenceFooterIfNeeded(userId, generationId, conversationId, responseBuilders.get(generationId));
         finalizeResponse(userId, userMessage, conversationId, generationId, responseFuture,
                 responseBuilders.get(generationId),
                 new LlmProviderRouter.StreamCompletion(finalTurn.finishReason(), totalPromptTokens, totalCompletionTokens, finalTurn.content().length()));
@@ -359,23 +400,66 @@ public class ChatHandler {
                                                    String conversationId,
                                                    LlmProviderRouter.ToolCallDecision toolCall) {
         sendToolCallStatus(userId, generationId, conversationId, toolCall, "executing");
-        AtomicBoolean summaryStreamStarted = new AtomicBoolean(false);
         try {
+            validatePlanToolCall(generationId, toolCall);
             logger.info("ReAct 执行 Agent Tool: name={}, userId={}, generationId={}, toolCallId={}, args={}",
                     toolCall.name(), userId, generationId, toolCall.id(), toolCall.arguments());
-            Consumer<String> toolChunkConsumer = "generate_summary".equals(toolCall.name())
-                    ? chunk -> {
-                        if (chunk == null || chunk.isEmpty()) {
-                            return;
-                        }
-                        if (summaryStreamStarted.compareAndSet(false, true)) {
-                            appendStreamChunk(userId, generationId, conversationId, "\n\n");
-                        }
-                        appendStreamChunk(userId, generationId, conversationId, chunk);
-                    }
+            ComplianceSearchFilter inheritedComplianceFilter = "generate_summary".equals(toolCall.name())
+                    ? generationComplianceFilters.get(generationId)
                     : null;
-            AgentToolRegistry.ToolExecutionResult toolResult =
-                    agentToolRegistry.executeTool(toolCall.name(), toolCall.arguments(), userId, toolChunkConsumer);
+            AgentToolRegistry.ToolExecutionResult toolResult;
+            if ("generate_summary".equals(toolCall.name())) {
+                int summaryFirstReference = nextReferenceNumber(generationId);
+                AtomicReference<Runnable> toolCancellation = new AtomicReference<>();
+                activeToolCancellations.put(generationId, toolCancellation);
+                try {
+                    toolResult = agentToolRegistry.executeSummary(toolCall.arguments(), userId, null,
+                            inheritedComplianceFilter, summaryFirstReference, cancelAction -> {
+                                toolCancellation.set(cancelAction);
+                                if (isGenerationCancelled(generationId)) {
+                                    cancelAction.run();
+                                }
+                            });
+                } finally {
+                    activeToolCancellations.remove(generationId, toolCancellation);
+                }
+                registerSummaryReferences(generationId, userMessage, toolResult, summaryFirstReference);
+                String summaryContent = normalizeSummaryCitations(
+                        toolResult.content() == null ? "" : toolResult.content(),
+                        summaryFirstReference,
+                        summarySourceCount(toolResult));
+                appendStreamChunk(userId, generationId, conversationId, "\n\n" + summaryContent);
+                sendToolCallStatus(userId, generationId, conversationId, toolCall, "success");
+                return new ExecutedToolResult(summaryContent, true);
+            }
+
+            toolResult = agentToolRegistry.executeTool(toolCall.name(), toolCall.arguments(), userId, null);
+
+            if ("plan_question".equals(toolCall.name())) {
+                QuestionPlan plan = QuestionPlan.fromToolData(toolResult.data());
+                generationPlans.put(generationId, plan);
+                logger.info("已登记子问题计划: generationId={}, count={}", generationId, plan.subQuestions().size());
+            } else if ("search_knowledge".equals(toolCall.name())) {
+                ComplianceSearchFilter usedFilter = complianceFilterFromToolData(toolResult.data());
+                if (usedFilter != null) {
+                    generationComplianceFilters.put(generationId, usedFilter);
+                }
+                QuestionPlan plan = generationPlans.get(generationId);
+                if (plan != null) {
+                    Integer index = QuestionPlan.parseIndex(toolCall.arguments().get("subQuestionIndex"));
+                    int distinctEvidence = plan.recordSearch(index, extractSearchResults(toolResult));
+                    logger.info("子问题检索证据: generationId={}, index={}, distinctEvidence={}",
+                            generationId, index, distinctEvidence);
+                }
+            } else if ("report_evidence".equals(toolCall.name())) {
+                // plan 为空的情况已由 validatePlanToolCall 在工具执行前拦截，这里直接取计划
+                QuestionPlan plan = generationPlans.get(generationId);
+                Object rawAssessments = toolResult.data() == null ? null : toolResult.data().get("assessments");
+                List<QuestionPlan.EvidenceAssessment> recorded = plan.recordAssessments(
+                        rawAssessments instanceof List<?> list ? list : null);
+                logger.info("已登记子问题证据充分性: generationId={}, assessments={}",
+                        generationId, recorded.size());
+            }
 
             // search_knowledge 返回的 SearchResult 列表与模型 prompt 中的 [N] 编号一一对应，
             // 必须把它落到 generationReferenceMappings 里，否则前端点击引用拿不到 MD5/页码。
@@ -386,24 +470,111 @@ public class ChatHandler {
             if (content == null || content.isBlank()) {
                 content = "工具 " + toolCall.name() + " 执行成功，但没有返回可展示内容。";
             }
+            boolean clarify = "ask_clarification".equals(toolCall.name());
+            if (clarify) {
+                appendStreamChunk(userId, generationId, conversationId, content);
+                logger.info("已输出澄清问题: generationId={}", generationId);
+            }
             sendToolCallStatus(userId, generationId, conversationId, toolCall, "success");
-            return new ExecutedToolResult(content, toolResult.streamedToUser());
+            return new ExecutedToolResult(content, toolResult.streamedToUser() || clarify);
         } catch (Exception exception) {
             logger.warn("ReAct Agent Tool 执行失败，作为 tool message 返回模型: name={}, generationId={}",
                     toolCall.name(), generationId, exception);
             sendToolCallStatus(userId, generationId, conversationId, toolCall, "failed");
-            // generate_summary 已经把部分摘要流给前端，再让模型重写会拼出"半个旧摘要 + 新摘要"。
-            // 直接以失败提示收尾，让 ReAct 循环立即 finalize，避免数据不一致。
-            if ("generate_summary".equals(toolCall.name()) && summaryStreamStarted.get()) {
-                appendStreamChunk(userId, generationId, conversationId,
-                        "\n\n（摘要流式生成中断：" + exception.getMessage() + "）");
-                return new ExecutedToolResult(
-                        "工具 " + toolCall.name() + " 已部分流式输出后失败: " + exception.getMessage(),
-                        true
-                );
-            }
             return new ExecutedToolResult("工具 " + toolCall.name() + " 执行失败: " + exception.getMessage(), false);
         }
+    }
+
+    private void appendEvidenceFooterIfNeeded(String userId,
+                                              String generationId,
+                                              String conversationId,
+                                              StringBuilder responseBuilder) {
+        QuestionPlan plan = generationPlans.get(generationId);
+        if (plan == null || plan.isFooterAppended()) {
+            return;
+        }
+        if (responseBuilder == null || responseBuilder.toString().isBlank()) {
+            return;
+        }
+        String footer = plan.buildEvidenceFooter();
+        appendStreamChunk(userId, generationId, conversationId, footer);
+        plan.markFooterAppended();
+        logger.info("已追加子问题证据说明: generationId={}, assessed={}, footerChars={}",
+                generationId, plan.hasAssessments(), footer.length());
+    }
+
+    private void validatePlanToolCall(String generationId, LlmProviderRouter.ToolCallDecision toolCall) {
+        QuestionPlan plan = generationPlans.get(generationId);
+        if ("plan_question".equals(toolCall.name())) {
+            if (plan != null) {
+                throw new IllegalArgumentException("本轮已制定子问题计划，不能重复制定；请继续检索或直接回答");
+            }
+            return;
+        }
+        if ("report_evidence".equals(toolCall.name())) {
+            if (plan == null) {
+                throw new IllegalArgumentException("请先调用 plan_question 制定子问题计划，再调用 report_evidence");
+            }
+            return;
+        }
+        if (!"search_knowledge".equals(toolCall.name())) {
+            return;
+        }
+        Integer index = QuestionPlan.parseIndex(toolCall.arguments().get("subQuestionIndex"));
+        if (plan == null) {
+            if (index != null) {
+                throw new IllegalArgumentException("请先调用 plan_question 制定子问题计划，再填写 subQuestionIndex");
+            }
+            return;
+        }
+        plan.validateIndex(index);
+    }
+
+    private List<SearchResult> extractSearchResults(AgentToolRegistry.ToolExecutionResult result) {
+        Object raw = result.data() == null ? null : result.data().get("results");
+        if (!(raw instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(SearchResult.class::isInstance)
+                .map(SearchResult.class::cast)
+                .toList();
+    }
+
+    /**
+     * 从 search_knowledge 的 data.complianceFilter 还原过滤条件；
+     * 旧工具结果没有该字段时返回 null，摘要会退回当前默认条件。
+     */
+    static ComplianceSearchFilter complianceFilterFromToolData(Map<String, Object> data) {
+        if (data == null || !(data.get("complianceFilter") instanceof Map<?, ?> raw)) {
+            return null;
+        }
+        List<String> docTypes = stringList(raw.get("docTypes"));
+        List<String> jurisdictions = stringList(raw.get("jurisdictions"));
+        LocalDate asOf = LocalDate.now();
+        Object rawAsOf = raw.get("asOf");
+        if (rawAsOf != null) {
+            try {
+                asOf = LocalDate.parse(String.valueOf(rawAsOf));
+            } catch (Exception ignored) {
+                // 旧数据或手写工具结果格式异常时使用今天，不阻断摘要
+            }
+        }
+        return ComplianceSearchFilter.fromCodes(docTypes, jurisdictions, asOf);
+    }
+
+    private static List<String> stringList(Object raw) {
+        if (raw instanceof List<?> list) {
+            return list.stream()
+                    .filter(item -> item != null)
+                    .map(String::valueOf)
+                    .filter(value -> !value.isBlank())
+                    .toList();
+        }
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            return List.of();
+        }
+        return List.of(String.valueOf(raw));
     }
 
     String appendReferencesFromSearchTool(String generationId,
@@ -417,30 +588,108 @@ public class ChatHandler {
             return toolResult.content();
         }
 
+        List<SearchResult> results = rawList.stream().filter(SearchResult.class::isInstance)
+                .map(SearchResult.class::cast).toList();
+        int firstReferenceNumber = nextReferenceNumber(generationId);
+        registerReferences(generationId, userMessage, results, firstReferenceNumber);
+        return AgentToolRegistry.formatSearchResults(results, firstReferenceNumber);
+    }
+
+    /**
+     * 摘要来源必须使用与内部摘要提示词相同的全局编号；先登记映射，再输出摘要文本。
+     */
+    private void registerSummaryReferences(String generationId,
+                                           String userMessage,
+                                           AgentToolRegistry.ToolExecutionResult toolResult,
+                                           int firstReferenceNumber) {
+        if (toolResult == null || toolResult.data() == null) {
+            return;
+        }
+        Object sources = toolResult.data().get("sources");
+        if (!(sources instanceof List<?> rawList) || rawList.isEmpty()) {
+            return;
+        }
+        List<SearchResult> results = rawList.stream().filter(SearchResult.class::isInstance)
+                .map(SearchResult.class::cast).toList();
+        registerReferences(generationId, userMessage, results, firstReferenceNumber);
+    }
+
+    private int nextReferenceNumber(String generationId) {
+        return generationReferenceMappings.getOrDefault(generationId, Map.of())
+                .keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
+    }
+
+    private int summarySourceCount(AgentToolRegistry.ToolExecutionResult toolResult) {
+        Object sources = toolResult == null || toolResult.data() == null ? null : toolResult.data().get("sources");
+        return sources instanceof List<?> list ? list.size() : 0;
+    }
+
+    /**
+     * 摘要模型偶尔仍按本地 [1..N] 引用；若全文编号都落在本地范围，则整体平移到全局编号。
+     * 已经是全局编号或混合编号时保持原样，避免二次偏移。
+     */
+    static String normalizeSummaryCitations(String content, int firstReferenceNumber, int sourceCount) {
+        if (content == null || content.isBlank() || sourceCount <= 0 || firstReferenceNumber <= 1) {
+            return content;
+        }
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\[(\\d+)]").matcher(content);
+        java.util.List<Integer> numbers = new java.util.ArrayList<>();
+        while (matcher.find()) {
+            try {
+                numbers.add(Integer.parseInt(matcher.group(1)));
+            } catch (NumberFormatException ignored) {
+                // 不是引用编号，保持原文
+            }
+        }
+        if (numbers.isEmpty()) {
+            return content;
+        }
+        int lastGlobal = firstReferenceNumber + sourceCount - 1;
+        boolean allGlobal = numbers.stream().allMatch(n -> n >= firstReferenceNumber && n <= lastGlobal);
+        boolean allLocal = numbers.stream().allMatch(n -> n >= 1 && n <= sourceCount);
+        if (allGlobal || !allLocal) {
+            return content;
+        }
+        matcher.reset();
+        StringBuilder shifted = new StringBuilder();
+        while (matcher.find()) {
+            try {
+                int number = Integer.parseInt(matcher.group(1));
+                matcher.appendReplacement(shifted, "[" + (number + firstReferenceNumber - 1) + "]");
+            } catch (NumberFormatException ignored) {
+                matcher.appendReplacement(shifted, "[" + matcher.group(1) + "]");
+            }
+        }
+        matcher.appendTail(shifted);
+        return shifted.toString();
+    }
+
+    private void registerReferences(String generationId,
+                                    String userMessage,
+                                    List<SearchResult> results,
+                                    int firstReferenceNumber) {
         Map<Integer, ReferenceInfo> mapping = new HashMap<>(
                 generationReferenceMappings.getOrDefault(generationId, Map.of()));
-        int firstReferenceNumber = mapping.keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
-        for (int i = 0; i < rawList.size(); i++) {
-            Object item = rawList.get(i);
-            if (!(item instanceof SearchResult result) || result.getFileMd5() == null) {
+        for (int i = 0; i < results.size(); i++) {
+            SearchResult result = results.get(i);
+            if (result == null || result.getFileMd5() == null) {
                 continue;
             }
+            int referenceNumber = firstReferenceNumber + i;
             String fileLabel = result.getFileName() != null ? result.getFileName() : "unknown";
-            mapping.put(firstReferenceNumber + i, buildReferenceInfo(result, fileLabel, userMessage));
+            mapping.put(referenceNumber, buildReferenceInfo(result, fileLabel, userMessage));
             if (result.getParentContext() != null && !result.getParentContext().isBlank()) {
                 generationParentContexts.computeIfAbsent(generationId, key -> new ConcurrentHashMap<>())
-                        .put(firstReferenceNumber + i, result.getParentContext());
+                        .put(referenceNumber, result.getParentContext());
             }
         }
         if (mapping.isEmpty()) {
-            return toolResult.content();
+            return;
         }
         generationReferenceMappings.put(generationId, mapping);
         chatGenerationStateService.updateReferenceMappings(generationId, toSerializableReferenceMappings(mapping));
-        logger.info("ReAct search_knowledge 引用映射已追加: generationId={}, count={}", generationId, mapping.size());
-        List<SearchResult> results = rawList.stream().filter(SearchResult.class::isInstance)
-                .map(SearchResult.class::cast).toList();
-        return AgentToolRegistry.formatSearchResults(results, firstReferenceNumber);
+        logger.info("ReAct 引用映射已登记: generationId={}, first={}, count={}",
+                generationId, firstReferenceNumber, mapping.size());
     }
 
     private record ExecutedToolResult(String content, boolean streamedToUser) {
@@ -670,8 +919,11 @@ public class ChatHandler {
         responseBuilders.remove(generationId);
         generationReferenceMappings.remove(generationId);
         generationParentContexts.remove(generationId);
+        generationPlans.remove(generationId);
+        generationComplianceFilters.remove(generationId);
         stopFlags.remove(generationId);
         activeStreams.remove(generationId);
+        activeToolCancellations.remove(generationId);
         cancelledGenerations.remove(generationId);
         CompletableFuture<String> future = responseFutures.remove(generationId);
         if (throwable != null && future != null && !future.isDone()) {
@@ -836,6 +1088,8 @@ public class ChatHandler {
             Map<String, Object> item = new HashMap<>();
             item.put("fileMd5", detail.fileMd5());
             item.put("fileName", detail.fileName());
+            item.put("documentId", detail.documentId());
+            item.put("versionId", detail.versionId());
             item.put("pageNumber", detail.pageNumber());
             item.put("anchorText", detail.anchorText());
             item.put("retrievalMode", detail.retrievalMode());
@@ -848,6 +1102,8 @@ public class ChatHandler {
             item.put("chunkId", detail.chunkId());
             item.put("citationStatus", detail.citationStatus());
             item.put("citationReason", detail.citationReason());
+            item.put("articlePath", detail.articlePath());
+            item.put("clauseNo", detail.clauseNo());
             serialized.put(String.valueOf(entry.getKey()), item);
         }
         return serialized;
@@ -969,8 +1225,29 @@ public class ChatHandler {
         Map<String, Object> errorResponse = new HashMap<>();
         errorResponse.put("type", "error");
         errorResponse.put("generationId", generationId);
-        errorResponse.put("error", "AI服务暂时不可用，请稍后重试");
+        errorResponse.put("error", userFacingErrorMessage(error));
         chatSessionRegistry.sendJsonToUser(userId, errorResponse);
+    }
+
+    /**
+     * 余额不足、上游 4xx 这类可行动原因直接告诉用户，避免一律显示“服务暂时不可用”。
+     */
+    private String userFacingErrorMessage(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof InsufficientBalanceException) {
+                return current.getMessage();
+            }
+            if (current instanceof WebClientResponseException responseException) {
+                String body = responseException.getResponseBodyAsString();
+                if (body != null && body.contains("Arrearage")) {
+                    return "模型服务账户欠费，请联系管理员充值后再试";
+                }
+                return "模型服务调用失败（HTTP " + responseException.getStatusCode().value() + "），请稍后重试";
+            }
+            current = current.getCause();
+        }
+        return "AI服务暂时不可用，请稍后重试";
     }
 
     private void sendRateLimitMessage(String userId, String generationId, RateLimitExceededException exception) {
@@ -1009,6 +1286,11 @@ public class ChatHandler {
         LlmProviderRouter.StreamHandle streamHandle = activeStreams.get(targetGenerationId);
         if (streamHandle != null) {
             streamHandle.cancel();
+        }
+        AtomicReference<Runnable> toolCancellation = activeToolCancellations.get(targetGenerationId);
+        Runnable cancelTool = toolCancellation == null ? null : toolCancellation.get();
+        if (cancelTool != null) {
+            cancelTool.run();
         }
         CompletableFuture<String> responseFuture = responseFutures.get(targetGenerationId);
         if (responseFuture != null && !responseFuture.isDone()) {
@@ -1074,6 +1356,8 @@ public class ChatHandler {
             referenceMap.put(Integer.parseInt(entry.getKey()), new ReferenceInfo(
                     (String) item.get("fileMd5"),
                     (String) item.get("fileName"),
+                    (String) item.get("documentId"),
+                    (String) item.get("versionId"),
                     item.get("pageNumber") instanceof Number number ? number.intValue() : null,
                     (String) item.get("anchorText"),
                     (String) item.get("retrievalMode"),
@@ -1085,7 +1369,9 @@ public class ChatHandler {
                     item.get("rawScore") instanceof Number number ? number.doubleValue() : null,
                     item.get("chunkId") instanceof Number number ? number.intValue() : null,
                     (String) item.get("citationStatus"),
-                    (String) item.get("citationReason")
+                    (String) item.get("citationReason"),
+                    (String) item.get("articlePath"),
+                    (String) item.get("clauseNo")
             ));
         }
         return referenceMap;
@@ -1101,6 +1387,8 @@ public class ChatHandler {
         return new ReferenceInfo(
                 result.getFileMd5(),
                 fileLabel,
+                result.getDocumentId(),
+                result.getVersionId(),
                 result.getPageNumber(),
                 result.getAnchorText(),
                 result.getRetrievalMode(),
@@ -1112,7 +1400,9 @@ public class ChatHandler {
                 result.getRawScore(),
                 result.getChunkId(),
                 null,
-                null
+                null,
+                result.getArticlePath(),
+                result.getClauseNo()
         );
     }
 
@@ -1175,6 +1465,9 @@ public class ChatHandler {
     public record ReferenceInfo(
             String fileMd5,
             String fileName,
+            /* 引用对应的业务文档和内容版本；旧引用映射可能为空，读取时退回按 MD5 判断 */
+            String documentId,
+            String versionId,
             Integer pageNumber,
             String anchorText,
             String retrievalMode,
@@ -1189,11 +1482,16 @@ public class ChatHandler {
             Integer chunkId,
             /* 引用校验结论：SUPPORTED / SUSPICIOUS，未开启或未校验时为 null */
             String citationStatus,
-            String citationReason
+            String citationReason,
+            /* 条款路径，如 "第三章 风险管理 > 第十二条"；非合规资料为 null */
+            String articlePath,
+            /* 条款号，如 "第十二条" 或 "第十二条第二款"；非合规资料为 null */
+            String clauseNo
     ) {
         public ReferenceInfo withCitation(String status, String reason) {
-            return new ReferenceInfo(fileMd5, fileName, pageNumber, anchorText, retrievalMode, retrievalLabel,
-                    retrievalQuery, matchedChunkText, evidenceSnippet, score, rawScore, chunkId, status, reason);
+            return new ReferenceInfo(fileMd5, fileName, documentId, versionId, pageNumber, anchorText,
+                    retrievalMode, retrievalLabel, retrievalQuery, matchedChunkText, evidenceSnippet,
+                    score, rawScore, chunkId, status, reason, articlePath, clauseNo);
         }
     }
 

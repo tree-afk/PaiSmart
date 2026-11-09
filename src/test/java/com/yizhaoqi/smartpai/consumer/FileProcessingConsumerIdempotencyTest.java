@@ -6,6 +6,7 @@ import com.yizhaoqi.smartpai.service.DocumentService;
 import com.yizhaoqi.smartpai.service.ParseService;
 import com.yizhaoqi.smartpai.service.UploadService;
 import com.yizhaoqi.smartpai.service.VectorizationService;
+import com.yizhaoqi.smartpai.service.document.DocumentBuildService;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLease;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseLostException;
 import com.yizhaoqi.smartpai.service.reliability.VectorizationLeaseService;
@@ -38,12 +39,14 @@ class FileProcessingConsumerIdempotencyTest {
     private final DocumentService documentService = mock(DocumentService.class);
     private final VectorizationLeaseService leaseService = mock(VectorizationLeaseService.class);
     private final UploadService uploadService = mock(UploadService.class);
+    private final DocumentBuildService buildService = mock(DocumentBuildService.class);
     private final VectorizationLease lease = new VectorizationLease(1L, "md5", LocalDateTime.now());
     private FileProcessingConsumer consumer;
 
     @BeforeEach
     void setUp() throws Exception {
-        consumer = new FileProcessingConsumer(parseService, vectorizationService, documentService, leaseService, uploadService);
+        consumer = new FileProcessingConsumer(parseService, vectorizationService, documentService, leaseService,
+                uploadService, buildService);
         when(uploadService.getMergedFileStream("md5")).thenReturn(mock(GetObjectResponse.class));
     }
 
@@ -86,13 +89,15 @@ class FileProcessingConsumerIdempotencyTest {
     }
 
     @Test
-    void processingFailureMarksFailedAndRethrowsForKafkaRetry() throws Exception {
+    void legacyProcessingFailureFailsFileAndRethrowsForKafkaRetry() throws Exception {
         when(leaseService.claim(any())).thenReturn(Optional.of(lease));
         doThrow(new RuntimeException("es down")).when(documentService).clearIndexedData("md5");
 
         assertThrows(RuntimeException.class, () -> consumer.processTask(task()));
 
         verify(leaseService).fail(eq(lease), any(RuntimeException.class));
+        // legacy 任务没有构建，失败语义保持原样：只标文件失败并抛出让 Kafka 重试
+        verifyNoInteractions(buildService);
         verifyNoInteractions(parseService);
     }
 
@@ -106,6 +111,24 @@ class FileProcessingConsumerIdempotencyTest {
         // 不抛异常：Kafka 不会重试，也不会进死信队列
         assertDoesNotThrow(() -> consumer.processTask(task()));
         verify(leaseService).fail(eq(lease), any(RuntimeException.class));
+    }
+
+    @Test
+    void blankBuildIdIsTreatedAsLegacyTask() throws Exception {
+        FileProcessingTask blankBuild = task();
+        blankBuild.setBuildId("  ");
+        when(leaseService.claim(any())).thenReturn(Optional.of(lease));
+        VectorizationService.VectorizationUsageResult result = new VectorizationService.VectorizationUsageResult(10, 2, "m");
+        when(vectorizationService.vectorizeWithUsage(eq("md5"), eq("1"), eq("TEAM"), eq(false), eq("1"), any(Runnable.class)))
+                .thenReturn(result);
+        when(leaseService.complete(lease, result)).thenReturn(true);
+
+        consumer.processTask(blankBuild);
+
+        // 空白 buildId 与 outbox 消息 key 一致，按 legacy 处理，不做构建状态预检
+        verify(documentService).clearIndexedData("md5");
+        verify(leaseService, never()).release(any());
+        verifyNoInteractions(buildService);
     }
 
     private FileProcessingTask task() {

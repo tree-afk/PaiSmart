@@ -111,6 +111,13 @@ public class ChatController {
         if (!reason.isBlank()) {
             arguments.put("reason", reason);
         }
+        // badcase 回流要能定位到具体会话和回答；模型工具调用路径没有这两个字段时只记 Redis
+        if (request.conversationId() != null && !request.conversationId().isBlank()) {
+            arguments.put("conversationId", request.conversationId().trim());
+        }
+        if (request.generationId() != null && !request.generationId().isBlank()) {
+            arguments.put("generationId", request.generationId().trim());
+        }
 
         AgentToolRegistry.ToolExecutionResult result =
                 agentToolRegistry.executeTool("submit_feedback", arguments, userId);

@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class VectorizationLeaseServiceTest {
@@ -59,6 +60,16 @@ class VectorizationLeaseServiceTest {
         when(repository.heartbeatVectorization(eq(5L), eq(lease.claimedAt()), any())).thenReturn(0);
 
         assertThrows(VectorizationLeaseLostException.class, () -> service.heartbeat(lease));
+    }
+
+    @Test
+    void releaseOnlyLogsAndNeverRewritesFileStatus() {
+        VectorizationLease lease = new VectorizationLease(5L, "md5", LocalDateTime.now());
+
+        service.release(lease);
+
+        // 构建已就绪/终态时文件状态由恢复任务收尾，这里不能写 COMPLETED 或 FAILED
+        verifyNoInteractions(repository);
     }
 
     private FileProcessingTask task(String type) {

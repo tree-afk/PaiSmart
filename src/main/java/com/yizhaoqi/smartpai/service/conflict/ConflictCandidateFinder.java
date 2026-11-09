@@ -10,7 +10,9 @@ import com.yizhaoqi.smartpai.config.DocumentConflictProperties;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
-import com.yizhaoqi.smartpai.service.HybridSearchService;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScope;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScopeService;
+import com.yizhaoqi.smartpai.service.document.DocumentRetrievalFilter;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,24 +40,30 @@ public class ConflictCandidateFinder {
     private final ElasticsearchClient esClient;
     private final DocumentVectorRepository documentVectorRepository;
     private final DocumentConflictProperties properties;
+    private final ActiveRetrievalScopeService activeRetrievalScopeService;
 
     public ConflictCandidateFinder(ElasticsearchClient esClient,
                                    DocumentVectorRepository documentVectorRepository,
-                                   DocumentConflictProperties properties) {
+                                   DocumentConflictProperties properties,
+                                   ActiveRetrievalScopeService activeRetrievalScopeService) {
         this.esClient = esClient;
         this.documentVectorRepository = documentVectorRepository;
         this.properties = properties;
+        this.activeRetrievalScopeService = activeRetrievalScopeService;
     }
 
     public List<ConflictCandidate> findCandidates(String fileMd5) throws IOException {
+        return findCandidates(fileMd5, null);
+    }
+
+    public List<ConflictCandidate> findCandidates(String fileMd5, String documentId) throws IOException {
         List<EsDocument> newChunks = loadNewChunks(fileMd5);
         if (newChunks.isEmpty()) {
             logger.info("冲突检测跳过：未在知识库中找到文件分块, fileMd5={}", fileMd5);
             return List.of();
         }
 
-        EsDocument owner = newChunks.get(0);
-        Query scope = buildScopeFilter(fileMd5, owner.getUserId(), owner.getOrgTag());
+        Query scope = buildScopeFilter(fileMd5, documentId, activeRetrievalScopeService.current());
         int maxConflicts = Math.max(properties.getMaxConflictsPerFile(), 1);
         List<ConflictCandidate> candidates = new ArrayList<>();
         Set<String> seenPairs = new HashSet<>();
@@ -137,14 +145,23 @@ public class ConflictCandidateFinder {
     }
 
     /**
-     * 可见范围：复用检索的权限过滤（同一上传者 OR 公开 OR 同组织标签），并排除新文件自身
+     * 对比范围与共享库检索保持一致：只对比当前发布文档的 active build 分块，
+     * 并排除新文件自身以及同一业务文档的历史版本，避免新版本与自己的旧版本判冲突。
      */
-    static Query buildScopeFilter(String fileMd5, String ownerUserId, String orgTag) {
-        List<String> tags = orgTag == null || orgTag.isBlank() ? List.of() : List.of(orgTag);
-        Query visibility = HybridSearchService.buildPermissionFilter(ownerUserId, tags);
-        return Query.of(q -> q.bool(b -> b
-                .filter(visibility)
-                .mustNot(m -> m.term(t -> t.field("fileMd5").value(fileMd5)))));
+    static Query buildScopeFilter(String fileMd5, String documentId, ActiveRetrievalScope scope) {
+        Query activeScope = DocumentRetrievalFilter.build(scope);
+        return Query.of(q -> q.bool(b -> {
+            b.filter(activeScope);
+            b.mustNot(m -> m.term(t -> t.field("fileMd5").value(fileMd5)));
+            if (documentId != null && !documentId.isBlank()) {
+                b.mustNot(m -> m.term(t -> t.field("documentId").value(documentId)));
+            }
+            return b;
+        }));
+    }
+
+    static Query buildScopeFilter(String fileMd5, ActiveRetrievalScope scope) {
+        return buildScopeFilter(fileMd5, null, scope);
     }
 
     SearchRequest buildKnnRequest(float[] vector, Query scope) {

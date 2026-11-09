@@ -45,4 +45,9 @@ public interface ConversationRepository extends JpaRepository<Conversation, Long
     List<Conversation> findAllByOrderByTimestampAsc();
 
     List<Conversation> findByConversationIdOrderByTimestampAsc(String conversationId);
+
+    /**
+     * 反馈落库时取该会话最近一条回答，用来快照问题和回答
+     */
+    Conversation findFirstByConversationIdOrderByTimestampDesc(String conversationId);
 }

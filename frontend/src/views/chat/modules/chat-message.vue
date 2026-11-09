@@ -73,9 +73,12 @@ const sourceFiles = ref<
 >([]);
 const bareUrlPattern = /https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
 const toolNameLabels: Record<string, string> = {
+  plan_question: '拆解问题',
   search_knowledge: '检索知识库',
+  report_evidence: '记录证据判断',
   generate_summary: '生成知识摘要',
   submit_feedback: '记录反馈',
+  ask_clarification: '请求补充信息',
   knowledge_stats: '读取知识库统计'
 };
 const toolStatusLabels: Record<Api.Chat.AgentToolEvent['status'], string> = {
@@ -239,6 +242,8 @@ function openReferencePreviewPage(payload: {
   matchedChunkText?: string | null;
   score?: number | null;
   chunkId?: number | null;
+  articlePath?: string | null;
+  clauseNo?: string | null;
   fileName: string;
   fileMd5?: string | null;
   pageNumber?: number | null;
@@ -342,6 +347,8 @@ async function handleSourceFileClick(fileInfo: {
         matchedChunkText: persistedDetail.matchedChunkText,
         score: persistedDetail.score,
         chunkId: persistedDetail.chunkId,
+        articlePath: persistedDetail.articlePath,
+        clauseNo: persistedDetail.clauseNo,
         sessionId: referenceSessionId,
         referenceNumber
       });
@@ -361,6 +368,8 @@ async function handleSourceFileClick(fileInfo: {
       matchedChunkText: detail?.matchedChunkText,
       score: detail?.score,
       chunkId: detail?.chunkId,
+      articlePath: detail?.articlePath,
+      clauseNo: detail?.clauseNo,
       sessionId: referenceSessionId,
       referenceNumber
     });

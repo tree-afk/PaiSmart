@@ -34,3 +34,17 @@ DRY_RUN=0 bash scripts/deploy-release.sh publish
 切换和验收由独立远程进程负责，本地终端关闭后仍继续执行；出现切换/验收异常时自动回滚。断电、系统 OOM 或 worker 被强杀等无法被捕获的故障，需用同一 RELEASE_ID 检查状态并手动回滚。数据库升级应只含兼容旧代码的增量修改；本次为新增表/字段，仍需保留数据库备份。
 
 验证脚本：`python3 -m unittest discover -s scripts/tests -v`。
+
+## 评测发布门禁（可选）
+
+发布前先跑一次评测，把新报告和基线报告对比：
+
+```bash
+python scripts/eval_gate.py \
+  --report eval-reports/<new-report>.json \
+  --baseline docs/eval/reports/<baseline-report>.json
+```
+
+- 默认允许 Recall@5、MRR 下降 3 个百分点，评委准确率下降 5 个百分点；失败用例数不超过基线；兜底率不超过 20%；用例数少于 30 直接拦截。
+- 退出码 `0` 放行，`1` 拦截，`2` 读取或解析失败。
+- 这是独立脚本，没有修改 `deploy_release.py`；接入 CI 时放在构建之后、发布之前即可。基线报告可以用 `docs/eval/reports/` 下归档的正式报告。

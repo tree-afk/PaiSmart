@@ -114,6 +114,14 @@ public class VectorizationLeaseService {
     }
 
     /**
+     * 结束认领但不改写文件状态：构建已就绪或已到终态时，文件状态由恢复任务按构建结果收尾
+     * （READY/ACTIVE/SUPERSEDED 标 COMPLETED，FAILED/CANCELLED 标 FAILED），这里只记日志
+     */
+    public void release(VectorizationLease lease) {
+        logger.info("结束向量化认领但不改写文件状态: fileMd5={}, fileUploadId={}", lease.fileMd5(), lease.fileUploadId());
+    }
+
+    /**
      * 优先取任务里上传者的那条记录，旧消息没有 userId 时退回该 MD5 最新的记录
      */
     private Optional<FileUpload> resolveRecord(FileProcessingTask task) {

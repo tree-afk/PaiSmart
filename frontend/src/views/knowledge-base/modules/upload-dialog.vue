@@ -7,47 +7,42 @@ defineOptions({
 
 const loading = ref(false);
 const visible = defineModel<boolean>('visible', { default: false });
-const orgOptions = ref<Api.OrgTag.Details[]>([]);
-const orgLoading = ref(false);
-const orgLoadFailed = ref(false);
-let orgRequestId = 0;
-
-const authStore = useAuthStore();
+const props = defineProps<{ documentId?: string | null }>();
 
 const { formRef, validate, restoreValidation } = useNaiveForm();
 const { defaultRequiredRule } = useFormRules();
 
 const model = ref<Api.KnowledgeBase.Form>(createDefaultModel());
 
+const docTypeOptions = [
+  { label: '监管规定', value: 'REGULATION' },
+  { label: '内部制度', value: 'INTERNAL_POLICY' },
+  { label: '产品条款', value: 'PRODUCT_TERMS' },
+  { label: '操作指引', value: 'GUIDELINE' }
+];
+
 function createDefaultModel(): Api.KnowledgeBase.Form {
   return {
-    orgTag: null,
-    orgTagName: '',
-    uploadMaxSizeBytes: null,
-    uploadMaxSizeMb: null,
-    isPublic: false,
+    documentId: props.documentId ?? null,
+    docType: null,
+    jurisdiction: '',
+    issuer: '',
+    applicableInstitutions: '',
+    effectiveAt: '',
+    expiresAt: '',
+    repealed: false,
     fileList: []
   };
 }
 
 const rules = ref<FormRules>({
-  orgTag: defaultRequiredRule,
-  isPublic: defaultRequiredRule,
+  docType: defaultRequiredRule,
+  jurisdiction: defaultRequiredRule,
+  issuer: defaultRequiredRule,
   fileList: defaultRequiredRule
 });
 
-const fileSizeLimitError = computed(() => {
-  if (authStore.isAdmin) return '';
-  const file = model.value.fileList?.[0]?.file;
-  if (!file || !model.value.uploadMaxSizeBytes) return '';
-  if (file.size <= model.value.uploadMaxSizeBytes) return '';
-
-  return `当前组织限制非管理员上传文件不超过 ${model.value.uploadMaxSizeMb} MB，当前文件大小为 ${(file.size / 1024 / 1024).toFixed(2)} MB`;
-});
-
-const submitDisabled = computed(
-  () => loading.value || orgLoading.value || !model.value.orgTag || Boolean(fileSizeLimitError.value)
-);
+const submitDisabled = computed(() => loading.value);
 
 function close() {
   visible.value = false;
@@ -56,7 +51,6 @@ function close() {
 const store = useKnowledgeBaseStore();
 async function handleSubmit() {
   await validate();
-  if (fileSizeLimitError.value) return;
 
   loading.value = true;
   await store.enqueueUpload(model.value);
@@ -64,91 +58,93 @@ async function handleSubmit() {
   close();
 }
 
-async function loadUploadOrganizations() {
-  orgRequestId += 1;
-  const requestId = orgRequestId;
-  orgOptions.value = [];
-  orgLoading.value = true;
-  orgLoadFailed.value = false;
-  const { error, data } = await request<Api.OrgTag.Mine>({ url: '/users/org-tags' });
-  if (requestId !== orgRequestId || !visible.value) return;
-
-  orgLoading.value = false;
-  orgLoadFailed.value = Boolean(error);
-  if (error || !data) return;
-
-  orgOptions.value = data.orgTagDetails || [];
-  const preferredOrg = orgOptions.value.find(org => org.tagId === data.primaryOrg) || orgOptions.value[0];
-  if (preferredOrg) {
-    model.value.orgTag = preferredOrg.tagId;
-    onUpdate(preferredOrg);
-  }
-}
-
 watch(visible, () => {
   if (visible.value) {
     model.value = createDefaultModel();
-    loadUploadOrganizations();
     restoreValidation();
-  } else {
-    orgRequestId += 1;
   }
 });
-
-function onUpdate(option: unknown) {
-  if (option) {
-    const selected = option as Api.OrgTag.Item;
-    model.value.orgTagName = selected.name;
-    model.value.uploadMaxSizeBytes = selected.uploadMaxSizeBytes;
-    model.value.uploadMaxSizeMb = selected.uploadMaxSizeMb;
-    return;
-  }
-  model.value.orgTagName = '';
-  model.value.uploadMaxSizeBytes = null;
-  model.value.uploadMaxSizeMb = null;
-}
 </script>
 
 <template>
   <NModal
     v-model:show="visible"
     preset="dialog"
-    title="文件上传"
+    :title="documentId ? '上传新版本' : '上传共享资料'"
     :show-icon="false"
     :mask-closable="false"
     class="w-500px!"
     @positive-click="handleSubmit"
   >
-    <NForm ref="formRef" :model="model" :rules="rules" label-placement="left" :label-width="100" mt-10>
-      <NFormItem label="所属空间" path="orgTag">
-        <div class="w-full">
-          <NSelect
-            v-model:value="model.orgTag"
-            :options="orgOptions"
-            label-field="name"
-            value-field="tagId"
-            placeholder="请选择所属空间"
-            :loading="orgLoading"
-            :disabled="orgLoading || orgOptions.length <= 1"
-            filterable
-            @update:value="(_, option) => onUpdate(option)"
-          />
-          <div class="mt-8px text-12px text-gray-500">仅可选择自己的空间和已加入的组织。</div>
-          <div v-if="orgLoadFailed" class="mt-8px text-12px text-#ef4444">空间列表加载失败，请关闭后重试。</div>
-          <div v-else-if="!orgLoading && !orgOptions.length" class="mt-8px text-12px text-#ef4444">
-            暂无可上传的空间，请先配置组织成员关系。
-          </div>
+    <NAlert type="info" :bordered="false" class="mb-12px">
+      {{
+        documentId
+          ? '新版本处理期间旧版继续提供问答；处理完成并满足生效条件后自动切换。'
+          : '资料处理完成后将进入共享知识库，供所有已登录的知识库用户问答使用。'
+      }}
+    </NAlert>
+    <NForm
+      ref="formRef"
+      :model="model"
+      :rules="rules"
+      label-placement="left"
+      :label-width="100"
+      class="max-h-70vh overflow-y-auto pr-8px"
+      mt-10
+    >
+      <NFormItem label="文档类型" path="docType">
+        <NSelect v-model:value="model.docType" :options="docTypeOptions" placeholder="请选择文档类型" class="w-full" />
+      </NFormItem>
+
+      <NFormItem label="适用地区" path="jurisdiction">
+        <NInput v-model:value="model.jurisdiction" placeholder="如：全国 / 上海" maxlength="100" />
+        <div class="mt-8px text-12px text-gray-500">填“全国”表示全国适用；问地方问题时检索会自动带上全国资料。</div>
+      </NFormItem>
+
+      <NFormItem label="发布机构" path="issuer">
+        <NInput v-model:value="model.issuer" placeholder="如：国家金融监督管理总局" maxlength="255" />
+        <div class="mt-8px text-12px text-gray-500">只表示谁发布，不代表资料适用于谁。</div>
+      </NFormItem>
+
+      <NFormItem label="适用机构" path="applicableInstitutions">
+        <NInput
+          v-model:value="model.applicableInstitutions"
+          placeholder="如：商业银行、保险公司；留空表示未标注"
+          maxlength="512"
+        />
+      </NFormItem>
+
+      <NFormItem label="生效日期" path="effectiveAt">
+        <NDatePicker
+          v-model:formatted-value="model.effectiveAt"
+          value-format="yyyy-MM-dd"
+          type="date"
+          clearable
+          class="w-full"
+          placeholder="留空表示效力待确认"
+        />
+        <div class="mt-8px text-12px text-gray-500">
+          留空表示效力待确认；未来日期会先完成构建，等到生效日才替换当前版本。
         </div>
       </NFormItem>
 
-      <NFormItem label="是否公开" path="isPublic">
-        <NRadioGroup v-model:value="model.isPublic" name="radiogroup">
-          <NSpace :size="16">
-            <NRadio :value="true">公开</NRadio>
-            <NRadio :value="false">私有</NRadio>
-          </NSpace>
-        </NRadioGroup>
+      <NFormItem label="失效日期" path="expiresAt">
+        <NDatePicker
+          v-model:formatted-value="model.expiresAt"
+          value-format="yyyy-MM-dd"
+          type="date"
+          clearable
+          class="w-full"
+          placeholder="留空表示未标注失效"
+        />
+        <div class="mt-8px text-12px text-gray-500">已过失效日期的版本不会参与检索。</div>
       </NFormItem>
+
+      <NFormItem label="废止标记" path="repealed">
+        <NCheckbox v-model:checked="model.repealed">该版本已废止</NCheckbox>
+        <div class="mt-8px text-12px text-gray-500">勾选后不会生效，也不会参与检索。</div>
+      </NFormItem>
+
       <NFormItem label="上传文件" path="fileList">
         <NUpload
           v-model:file-list="model.fileList"
@@ -159,12 +155,6 @@ function onUpdate(option: unknown) {
         >
           <NButton>上传文件</NButton>
         </NUpload>
-        <div v-if="fileSizeLimitError" class="mt-8px text-12px text-#ef4444">
-          {{ fileSizeLimitError }}
-        </div>
-        <div v-else-if="!authStore.isAdmin && model.uploadMaxSizeMb" class="mt-8px text-12px text-#d97706">
-          当前组织限制非管理员上传文件不超过 {{ model.uploadMaxSizeMb }} MB
-        </div>
       </NFormItem>
     </NForm>
     <template #action>

@@ -2,6 +2,7 @@ import { useRouter } from 'vue-router';
 import type { RouteLocationRaw } from 'vue-router';
 import type { RouteKey } from '@elegant-router/types';
 import { router as globalRouter } from '@/router';
+import { useRouteStore } from '@/store/modules/route';
 
 /**
  * Router push
@@ -96,7 +97,14 @@ export function useRouterPush(inSetup = true) {
   async function redirectFromLogin(needRedirect = true) {
     const redirect = route.value.query?.redirect as string;
 
-    if (needRedirect && redirect) {
+    // 先注册当前身份可访问的路由，避免回到上次遗留的管理页面。
+    const routeStore = useRouteStore();
+    await routeStore.initAuthRoute();
+    const target = redirect ? router.resolve(redirect) : null;
+    const canRedirect =
+      target?.matched.length && !['not-found', 'login', '403', '404', '500'].includes(String(target.name));
+
+    if (needRedirect && redirect && canRedirect) {
       await routerPush(redirect);
     } else {
       await toHome();

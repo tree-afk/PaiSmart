@@ -83,6 +83,18 @@ class EvalDatasetParserTest {
     }
 
     @Test
+    void parsesExpectedBehaviorSoClarifyFirstCasesAreMarked() throws Exception {
+        String jsonl = """
+                {"question": "等待期是多少天？", "referenceAnswer": "需先确认产品和版本", "expectedBehavior": "clarify_first"}
+                {"question": "端口？", "referenceAnswer": "8080"}
+                """;
+        List<EvalCase> cases = EvalDatasetParser.parse(new StringReader(jsonl), objectMapper, 10);
+
+        assertTrue(cases.get(0).expectsClarificationFirst());
+        assertFalse(cases.get(1).expectsClarificationFirst());
+    }
+
+    @Test
     void bundledPaismartDatasetHasEvidenceForEveryLabeledCase() throws Exception {
         try (var in = getClass().getResourceAsStream("/eval/paismart-eval-v1.jsonl")) {
             List<EvalCase> cases = EvalDatasetParser.parse(new InputStreamReader(in, StandardCharsets.UTF_8), objectMapper, 100);

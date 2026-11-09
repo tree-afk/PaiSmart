@@ -1,11 +1,11 @@
 package com.yizhaoqi.smartpai.service;
 
+import com.yizhaoqi.smartpai.exception.CustomException;
 import com.yizhaoqi.smartpai.model.FileProcessingTask;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
-import com.yizhaoqi.smartpai.service.conflict.DocumentVectorizedEvent;
+import com.yizhaoqi.smartpai.service.document.DocumentVersionService;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
-import com.yizhaoqi.smartpai.service.reliability.DocumentStatusNotifier;
 import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
 import com.yizhaoqi.smartpai.repository.ChunkInfoRepository;
@@ -17,11 +17,10 @@ import io.minio.MinioClient;
 import io.minio.RemoveObjectArgs;
 import io.minio.http.Method;
 import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.tika.exception.TikaException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,8 +29,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -39,6 +36,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -90,22 +88,13 @@ public class DocumentService {
     private StringRedisTemplate stringRedisTemplate;
 
     @Autowired
-    private ParseService parseService;
-
-    @Autowired
-    private VectorizationService vectorizationService;
-
-    @Autowired
     private FileProcessingOutboxService fileProcessingOutboxService;
 
     @Autowired
-    private DocumentStatusNotifier documentStatusNotifier;
-
-    @Autowired(required = false)
-    private ApplicationEventPublisher eventPublisher;
+    private DocumentVersionService documentVersionService;
 
     /**
-     * 删除文档及其相关数据
+     * 按 MD5 清理未版本化旧文档及其相关数据
      * 该方法将删除:
      * 1. FileUpload记录
      * 2. DocumentVector记录
@@ -115,7 +104,7 @@ public class DocumentService {
      * @param fileMd5 文件MD5
      */
     @Transactional
-    public void deleteDocument(String fileMd5, String userId) {
+    public void deleteLegacyDocument(String fileMd5, String userId) {
         logger.info("开始删除文档: {}", fileMd5);
         
         try {
@@ -191,75 +180,16 @@ public class DocumentService {
         }
     }
 
-    @Transactional
-    public VectorizationService.VectorizationUsageResult reindexDocument(String fileMd5, String requesterId) {
-        logger.info("开始重建文档索引: fileMd5={}, requesterId={}", fileMd5, requesterId);
-
-        FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
-
-        markVectorizationProcessing(fileUpload, true);
-
-        try (InputStream fileStream = uploadService.getMergedFileStream(fileMd5)) {
-            try {
-                // 只清理线上别名，保留旧版本索引中的数据用于回滚
-                elasticsearchService.deleteByFileMd5(KnowledgeIndexNames.ALIAS, fileMd5);
-                logger.info("重建前已清理 Elasticsearch 文档: {}", fileMd5);
-            } catch (Exception e) {
-                logger.warn("重建前清理 Elasticsearch 失败: fileMd5={}, error={}", fileMd5, e.getMessage());
-            }
-
-            documentVectorRepository.deleteByFileMd5(fileMd5);
-            invalidatePdfSinglePagePreviewCache(fileMd5);
-
-            parseService.parseAndSave(
-                    fileMd5,
-                    fileStream,
-                    fileUpload.getUserId(),
-                    fileUpload.getOrgTag(),
-                    fileUpload.isPublic()
-            );
-
-            VectorizationService.VectorizationUsageResult result = vectorizationService.vectorizeWithUsage(
-                    fileMd5,
-                    fileUpload.getUserId(),
-                    fileUpload.getOrgTag(),
-                    fileUpload.isPublic(),
-                    requesterId
-            );
-            markVectorizationCompleted(fileUpload, result);
-            publishVectorized(fileMd5);
-
-            logger.info(
-                    "文档索引重建完成: fileMd5={}, actualTokens={}, actualChunkCount={}",
-                    fileMd5,
-                    result.actualEmbeddingTokens(),
-                    result.actualChunkCount()
-            );
-            return result;
-        } catch (TikaException e) {
-            markVectorizationFailed(fileUpload, e);
-            logger.error("重建文档索引失败，文档解析异常: {}", fileMd5, e);
-            throw new RuntimeException("重建文档索引失败: " + e.getMessage(), e);
-        } catch (Exception e) {
-            markVectorizationFailed(fileUpload, e);
-            logger.error("重建文档索引失败: {}", fileMd5, e);
-            throw new RuntimeException("重建文档索引失败: " + e.getMessage(), e);
-        }
-    }
-
     /**
-     * 通知冲突检测等后置任务；监听方在事务提交后异步执行，这里的异常不能影响重建结果
+     * 异步重建：按文件的当前内容版本新建 build 并写 outbox，不在请求线程里删除任何索引/向量数据；
+     * 旧 build 保持 ACTIVE，新 build 完成核对后才切换。
      */
-    private void publishVectorized(String fileMd5) {
-        if (eventPublisher == null) {
-            return;
-        }
-        try {
-            eventPublisher.publishEvent(new DocumentVectorizedEvent(fileMd5));
-        } catch (Exception e) {
-            logger.warn("发布向量化完成事件失败，忽略: fileMd5={}, error={}", fileMd5, e.getMessage());
-        }
+    @Transactional
+    public VectorizationSubmission enqueueAsyncReindex(String fileMd5, String requesterId) {
+        VectorizationSubmission submission = enqueueBuildTask(fileMd5, requesterId, FileProcessingTask.TASK_TYPE_REINDEX);
+        logger.info("已提交异步重建索引任务: fileMd5={}, requesterId={}, buildId={}",
+                fileMd5, requesterId, submission.versionBuild().buildId());
+        return submission;
     }
 
     /**
@@ -273,62 +203,115 @@ public class DocumentService {
         logger.info("已清理文件旧分块和索引: fileMd5={}", fileMd5);
     }
 
+    /**
+     * 清理指定构建的残留：只删除该 build 写入的 ES 分块和 document_vectors，不碰其他构建和 legacy 数据。
+     * 供消费者在重跑同一构建前调用；ES 清理失败直接抛出，让任务重试而不是带着旧数据继续
+     */
+    public void clearBuildData(String buildId) {
+        elasticsearchService.deleteByBuildId(KnowledgeIndexNames.ALIAS, buildId);
+        documentVectorRepository.deleteByBuildId(buildId);
+        logger.info("已清理构建旧分块和索引: buildId={}", buildId);
+    }
+
+    /**
+     * 异步重试：对文件对应的内容版本新建 build；尚未版本化的旧文件先懒迁移出版本 1。
+     * 不再投递按 fileMd5 清理数据的 8 参 legacy 任务。
+     */
     @Transactional
-    public FileUpload enqueueAsyncVectorizationRetry(String fileMd5, String requesterId) {
+    public VectorizationSubmission enqueueAsyncVectorizationRetry(String fileMd5, String requesterId) {
+        VectorizationSubmission submission = enqueueBuildTask(fileMd5, requesterId, FileProcessingTask.TASK_TYPE_REINDEX);
+        logger.info("已提交异步向量化重试任务: fileMd5={}, requesterId={}, buildId={}",
+                fileMd5, requesterId, submission.versionBuild().buildId());
+        return submission;
+    }
+
+    /**
+     * 找到文件当前的内容版本，创建新 build 并投递带完整构建上下文的任务；
+     * 没有版本记录的旧文件先登记为 legacy version 1（共享 md5 会被版本服务拒绝）。
+     * 允许文件所有者或管理员对已完成合并的文件发起；fileMd5 重试/重建允许落在 active 或最新版本上。
+     */
+    private VectorizationSubmission enqueueBuildTask(String fileMd5, String requesterId, String taskType) {
         FileUpload fileUpload = fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc(fileMd5)
-                .orElseThrow(() -> new RuntimeException("文件不存在"));
+                .orElseThrow(() -> new CustomException("文件不存在", HttpStatus.NOT_FOUND));
+        requireReindexableUpload(fileUpload, requesterId);
+
+        DocumentVersionService.VersionBuild versionBuild;
+        String buildKind;
+        Optional<DocumentVersionService.VersionBuild> existingVersion =
+                documentVersionService.findByFileUploadId(fileUpload.getId());
+        if (existingVersion.isPresent()) {
+            versionBuild = documentVersionService.createBuildForActiveVersion(
+                    existingVersion.get().versionId(), requesterId, FileProcessingTask.BUILD_KIND_REINDEX);
+            buildKind = FileProcessingTask.BUILD_KIND_REINDEX;
+        } else {
+            DocumentVersionService.VersionBuild legacy =
+                    documentVersionService.promoteLegacy(fileUpload, requesterId);
+            versionBuild = documentVersionService.createBuildForActiveVersion(
+                    legacy.versionId(), requesterId, FileProcessingTask.BUILD_KIND_LEGACY_PROMOTION);
+            buildKind = FileProcessingTask.BUILD_KIND_LEGACY_PROMOTION;
+        }
 
         FileProcessingTask task = new FileProcessingTask(
-                fileUpload.getFileMd5(),
+                versionBuild.fileMd5(),
                 null,
-                fileUpload.getFileName(),
+                versionBuild.fileName(),
                 fileUpload.getUserId(),
-                fileUpload.getOrgTag(),
-                fileUpload.isPublic(),
-                FileProcessingTask.TASK_TYPE_REINDEX,
-                requesterId
+                versionBuild.orgTag(),
+                versionBuild.isPublic(),
+                taskType,
+                requesterId,
+                versionBuild.documentId(),
+                versionBuild.versionId(),
+                versionBuild.buildId(),
+                buildKind,
+                versionBuild.versionNo(),
+                versionBuild.buildNo(),
+                versionBuild.compliance().docType(),
+                versionBuild.compliance().jurisdiction(),
+                versionBuild.compliance().issuer(),
+                versionBuild.compliance().wireEffectiveAt(),
+                versionBuild.compliance().applicableInstitutions(),
+                versionBuild.compliance().wireExpiresAt(),
+                versionBuild.compliance().repealed()
         );
 
-        // 状态改成待处理和待投递消息同一事务提交，提交后再投递 Kafka
+        // 状态改成待处理和待投递消息同一事务提交，提交后再投递 Kafka；消息 key 为 buildId
         fileProcessingOutboxService.enqueueVectorization(fileUpload, task, true);
-
-        logger.info("已提交异步向量化重试任务: fileMd5={}, requesterId={}", fileMd5, requesterId);
-        return fileUpload;
+        return new VectorizationSubmission(fileUpload, versionBuild);
     }
 
-    private void markVectorizationProcessing(FileUpload fileUpload, boolean resetActualUsage) {
-        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MILLIS);
-        fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_PROCESSING);
-        fileUpload.setVectorizationErrorMessage(null);
-        // 同步重建也记下开始时间和心跳，避免定时任务按上一轮的旧心跳把它误判为卡住
-        fileUpload.setProcessingStartedAt(now);
-        fileUpload.setHeartbeatAt(now);
-        if (resetActualUsage) {
-            fileUpload.setActualEmbeddingTokens(null);
-            fileUpload.setActualChunkCount(null);
+    /**
+     * 重试/重建允许文件所有者或管理员发起；对外入口由 KnowledgeAuthorizationFilter 限制为管理员。
+     */
+    private void requireReindexableUpload(FileUpload fileUpload, String requesterId) {
+        if (!fileUpload.getUserId().equals(requesterId) && !isAdmin(requesterId)) {
+            throw new CustomException("没有权限操作此文件", HttpStatus.FORBIDDEN);
         }
-        fileUploadRepository.save(fileUpload);
-        documentStatusNotifier.notifyChanged(fileUpload.getId());
+        if (fileUpload.getStatus() != FileUpload.STATUS_COMPLETED) {
+            throw new CustomException("文件尚未完成合并，无法重建索引", HttpStatus.CONFLICT);
+        }
     }
 
-    private void markVectorizationCompleted(FileUpload fileUpload, VectorizationService.VectorizationUsageResult result) {
-        fileUpload.setActualEmbeddingTokens((long) result.actualEmbeddingTokens());
-        fileUpload.setActualChunkCount(result.actualChunkCount());
-        fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_COMPLETED);
-        fileUpload.setVectorizationErrorMessage(null);
-        fileUploadRepository.save(fileUpload);
-        documentStatusNotifier.notifyChanged(fileUpload.getId());
+    /**
+     * 解析请求者是否为管理员：JWT 的 userId 可能是数字主键或用户名。
+     */
+    private boolean isAdmin(String requesterId) {
+        if (requesterId == null || requesterId.isBlank()) {
+            return false;
+        }
+        try {
+            return userRepository.findById(Long.parseLong(requesterId))
+                    .map(user -> user.getRole() == com.yizhaoqi.smartpai.model.User.Role.ADMIN)
+                    .orElse(false);
+        } catch (NumberFormatException e) {
+            return userRepository.findByUsername(requesterId)
+                    .map(user -> user.getRole() == com.yizhaoqi.smartpai.model.User.Role.ADMIN)
+                    .orElse(false);
+        }
     }
 
-    private void markVectorizationFailed(FileUpload fileUpload, String errorMessage) {
-        fileUpload.setVectorizationStatus(FileUpload.VECTORIZATION_STATUS_FAILED);
-        fileUpload.setVectorizationErrorMessage(trimVectorizationErrorMessage(errorMessage));
-        fileUploadRepository.save(fileUpload);
-        documentStatusNotifier.notifyChanged(fileUpload.getId());
-    }
-
-    private void markVectorizationFailed(FileUpload fileUpload, Throwable error) {
-        markVectorizationFailed(fileUpload, resolveVectorizationErrorMessage(error));
+    public record VectorizationSubmission(FileUpload fileUpload,
+                                          DocumentVersionService.VersionBuild versionBuild) {
     }
 
     /**
@@ -412,6 +395,14 @@ public class DocumentService {
         }
     }
     
+    /**
+     * 文件管理者看到的共享库完整列表：不再按上传者/组织过滤。
+     */
+    public List<FileUpload> getFileManagerFiles() {
+        backfillLegacyVectorizationStatuses();
+        return deduplicateFileUploads(fileUploadRepository.findAll());
+    }
+
     /**
      * 获取用户上传的所有文件列表
      *
@@ -836,7 +827,10 @@ public class DocumentService {
         }
     }
 
-    private void invalidatePdfSinglePagePreviewCache(String fileMd5) {
+    /**
+     * 清理指定文件的所有 PDF 单页预览缓存；版本化文档删除后也需要调用，避免继续返回已删除内容
+     */
+    public void invalidatePdfSinglePagePreviewCache(String fileMd5) {
         try {
             PDF_SINGLE_PAGE_LOCAL_CACHE.keySet().removeIf(key -> key.startsWith(PDF_SINGLE_PAGE_CACHE_PREFIX + fileMd5 + ":"));
             Set<String> cacheKeys = stringRedisTemplate.keys(PDF_SINGLE_PAGE_CACHE_PREFIX + fileMd5 + ":*");

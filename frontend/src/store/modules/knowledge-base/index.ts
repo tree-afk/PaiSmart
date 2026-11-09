@@ -29,9 +29,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
         fileMd5: task.fileMd5,
         chunkIndex,
         totalSize: task.totalSize,
-        fileName: task.fileName,
-        orgTag: task.orgTag,
-        isPublic: task.isPublic ?? false
+        fileName: task.fileName
       },
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -83,10 +81,23 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
 
   async function mergeFile(task: Api.KnowledgeBase.UploadTask) {
     try {
+      // 合规元数据只在本次上传填写过时随合并请求提交，旧任务或续传不带时由后端保持为空/继承
+      const payload: Api.KnowledgeBase.Merge = {
+        fileMd5: task.fileMd5,
+        fileName: task.fileName,
+        documentId: task.documentId || undefined,
+        docType: task.docType ?? undefined,
+        jurisdiction: task.jurisdiction || undefined,
+        issuer: task.issuer || undefined,
+        applicableInstitutions: task.applicableInstitutions || undefined,
+        effectiveAt: task.effectiveAt || undefined,
+        expiresAt: task.expiresAt || undefined,
+        repealed: task.repealed || undefined
+      };
       const { error, data } = await request<Api.KnowledgeBase.MergeResult>({
         url: '/upload/merge',
         method: 'POST',
-        data: { fileMd5: task.fileMd5, fileName: task.fileName }
+        data: payload
       });
       if (error) return false;
 
@@ -151,17 +162,23 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       fileMd5: md5,
       fileName: file.name,
       totalSize: file.size,
-      public: form.isPublic,
-      isPublic: form.isPublic,
+      documentId: form.documentId ?? null,
+      public: true,
+      isPublic: true,
       uploadedChunks: [],
       progress: 0,
       status: UploadStatus.Pending,
-      orgTag: form.orgTag,
+      orgTag: null,
+      docType: form.docType,
+      jurisdiction: form.jurisdiction,
+      issuer: form.issuer,
+      applicableInstitutions: form.applicableInstitutions,
+      effectiveAt: form.effectiveAt,
+      expiresAt: form.expiresAt,
+      repealed: form.repealed,
       vectorizationStatus: null,
       vectorizationErrorMessage: null
     };
-
-    newTask.orgTagName = form.orgTagName ?? null;
 
     // 将新的上传任务添加到任务队列中
     tasks.value.push(newTask);

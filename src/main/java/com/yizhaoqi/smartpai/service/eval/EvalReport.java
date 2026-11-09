@@ -43,7 +43,11 @@ public record EvalReport(
             Map<String, Long> retrievalModeCounts,
             Map<String, Long> diagnosisCounts,
             /* 分阶段检索指标，旧报告没有这一项 */
-            StageSummary stages
+            StageSummary stages,
+            /* 延迟与兜底率，旧报告没有这一项 */
+            LatencySummary latency,
+            /* 引用可溯源率与相关率，旧报告没有这一项 */
+            CitationSummary citation
     ) {
 
         public EvalSummary(int totalCases, int labeledCases, int retrievalHits, Double recallAtK, Double mrr,
@@ -52,7 +56,17 @@ public record EvalReport(
                            int failedCases, Map<String, Long> retrievalModeCounts, Map<String, Long> diagnosisCounts) {
             this(totalCases, labeledCases, retrievalHits, recallAtK, mrr, docRecallAtK, evidenceLabeledCases,
                     meanExpectedDocCoverage, judgedCases, correctCases, meanJudgeScore, accuracy, needsHumanReviewCount,
-                    failedCases, retrievalModeCounts, diagnosisCounts, null);
+                    failedCases, retrievalModeCounts, diagnosisCounts, null, null, null);
+        }
+
+        public EvalSummary(int totalCases, int labeledCases, int retrievalHits, Double recallAtK, Double mrr,
+                           Double docRecallAtK, int evidenceLabeledCases, Double meanExpectedDocCoverage, int judgedCases,
+                           int correctCases, Double meanJudgeScore, Double accuracy, int needsHumanReviewCount,
+                           int failedCases, Map<String, Long> retrievalModeCounts, Map<String, Long> diagnosisCounts,
+                           StageSummary stages) {
+            this(totalCases, labeledCases, retrievalHits, recallAtK, mrr, docRecallAtK, evidenceLabeledCases,
+                    meanExpectedDocCoverage, judgedCases, correctCases, meanJudgeScore, accuracy, needsHumanReviewCount,
+                    failedCases, retrievalModeCounts, diagnosisCounts, stages, null, null);
         }
     }
 
@@ -70,6 +84,11 @@ public record EvalReport(
      * @param meanIrrelevantInTopK      标注用例平均每题返回几条不相关结果
      * @param unlabeledCases            无答案（未标注期望文档）用例数
      * @param unlabeledMeanReturned     无答案用例平均返回条数，越少越好
+     * @param coverageCases             标注了期望证据的用例数（证据覆盖率的分母）
+     * @param meanEvidenceCoverageAtK   前 topK 条平均覆盖了多少比例的期望证据短语（逐条计数，不是"任意一条即满分"）
+     * @param meanEvidenceCoverageDelivered 实际交给生成的片段平均覆盖率；拆分子问题后条数多于 topK 时用于和 topK 口径对比
+     * @param meanCandidateEvidenceCoverage 重排前候选池的平均证据覆盖率，与 topK 口径的差值就是精排丢掉的证据
+     * @param decomposedCases           模型判断需要拆分、真的拆出 2 个及以上子问题的用例数
      */
     public record StageSummary(int stagedCases,
                                Double candidateRecall,
@@ -82,6 +101,50 @@ public record EvalReport(
                                Double meanPrecisionAtK,
                                Double meanIrrelevantInTopK,
                                int unlabeledCases,
-                               Double unlabeledMeanReturned) {
+                               Double unlabeledMeanReturned,
+                               int coverageCases,
+                               Double meanEvidenceCoverageAtK,
+                               Double meanEvidenceCoverageDelivered,
+                               Double meanCandidateEvidenceCoverage,
+                               int decomposedCases) {
+
+        public StageSummary(int stagedCases, Double candidateRecall, Double meanNdcgAtK, int ndcgCases,
+                            Double bm25Recall, Double knnRecall, int thresholdDroppedCases, int thresholdDroppedResults,
+                            Double meanPrecisionAtK, Double meanIrrelevantInTopK, int unlabeledCases,
+                            Double unlabeledMeanReturned) {
+            this(stagedCases, candidateRecall, meanNdcgAtK, ndcgCases, bm25Recall, knnRecall, thresholdDroppedCases,
+                    thresholdDroppedResults, meanPrecisionAtK, meanIrrelevantInTopK, unlabeledCases,
+                    unlabeledMeanReturned, 0, null, null, null, 0);
+        }
+    }
+
+    /**
+     * 体验层汇总：总耗时、检索、生成、评委分别取 P50/P95；降级模式（非 HYBRID*）单独计数。
+     * 两路召回并行，分阶段耗时不等于总耗时。
+     */
+    public record LatencySummary(Double p50TotalMs,
+                                 Double p95TotalMs,
+                                 Double p50RetrievalMs,
+                                 Double p95RetrievalMs,
+                                 Double p50GenerationMs,
+                                 Double p95GenerationMs,
+                                 Double p50JudgeMs,
+                                 Double p95JudgeMs,
+                                 int measuredCases,
+                                 int fallbackCases,
+                                 Double fallbackRate) {
+    }
+
+    /**
+     * 引用层汇总：平均每条回答引用几个来源、可溯源率（编号能落到本次检索结果）和相关率（引用分块命中期望证据）。
+     * 相关率只在标注了期望文档且至少有 1 个可溯源引用时计算。
+     */
+    public record CitationSummary(int citationCases,
+                                  int uncitedCases,
+                                  int traceableCases,
+                                  int relevanceCases,
+                                  Double meanCitationsPerAnswer,
+                                  Double meanTraceability,
+                                  Double meanRelevance) {
     }
 }

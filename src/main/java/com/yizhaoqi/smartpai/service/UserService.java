@@ -109,7 +109,7 @@ public class UserService {
         user.setUsername(username);
         // 对密码进行加密处理并设置到 User 对象中
         user.setPassword(PasswordUtil.encode(password));
-        // 设置用户角色为普通用户
+        // 设置用户角色为普通用户；知识库角色固定为阅读者
         user.setRole(User.Role.USER);
         
         // 保存用户以生成ID

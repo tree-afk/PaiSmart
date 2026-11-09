@@ -8,6 +8,7 @@ import com.yizhaoqi.smartpai.config.RagEvalProperties;
 import com.yizhaoqi.smartpai.entity.SearchResult;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.AgentToolRegistry;
 import com.yizhaoqi.smartpai.service.HybridSearchService;
 import com.yizhaoqi.smartpai.service.LlmProviderRouter;
 import com.yizhaoqi.smartpai.service.search.ParentContextExpander;
@@ -45,6 +46,9 @@ class RagEvalCaseRunnerTest {
     private final List<String> llmReplies = new ArrayList<>();
     /** 与 llmReplies 一一对应，为空时按 stop 处理 */
     private final List<String> llmFinishReasons = new ArrayList<>();
+    /** 与 llmReplies 一一对应，非空时该轮返回这些工具调用 */
+    private final List<List<LlmProviderRouter.ToolCallDecision>> llmToolCalls = new ArrayList<>();
+    private final List<List<AgentToolRegistry.AgentTool>> llmTools = new ArrayList<>();
     private final List<Integer> llmMaxTokens = new ArrayList<>();
     private RagEvalCaseRunner runner;
 
@@ -58,13 +62,15 @@ class RagEvalCaseRunnerTest {
         when(router.completeReActTurn(anyString(), anyList(), anyList(), anyInt(), eq(ModelCallPriority.BACKGROUND))).thenAnswer(invocation -> {
             List<Map<String, Object>> messages = invocation.getArgument(1);
             llmCalls.add(messages);
+            llmTools.add(invocation.getArgument(2));
             llmMaxTokens.add(invocation.getArgument(3));
             String reply = llmReplies.remove(0);
             String finishReason = llmFinishReasons.isEmpty() ? "stop" : llmFinishReasons.remove(0);
             if (reply == null) {
                 throw new RuntimeException("upstream 500");
             }
-            return new LlmProviderRouter.ReActTurn(reply, List.of(), Map.of(), finishReason, 1, 1);
+            List<LlmProviderRouter.ToolCallDecision> toolCalls = llmToolCalls.isEmpty() ? List.of() : llmToolCalls.remove(0);
+            return new LlmProviderRouter.ReActTurn(reply, toolCalls, Map.of(), finishReason, 1, 1);
         });
     }
 
@@ -89,6 +95,7 @@ class RagEvalCaseRunnerTest {
 
         // 生成和评委是两次独立调用；评委的输入作为 JSON 数据放在 user 消息里
         assertEquals(2, llmCalls.size());
+        assertTrue(llmTools.get(0).isEmpty(), "非澄清用例不提供工具，保持原有生成基线");
         List<Map<String, Object>> judgeMessages = llmCalls.get(1);
         assertEquals(RagEvalCaseRunner.JUDGE_SYSTEM_PROMPT, judgeMessages.get(0).get("content"));
         JsonNode payload = objectMapper.readTree((String) judgeMessages.get(1).get("content"));
@@ -261,6 +268,90 @@ class RagEvalCaseRunnerTest {
         assertEquals(0.5, stages.precisionAtK(), 1e-9, "返回 2 条、1 条相关");
         assertEquals(1, stages.irrelevantInTopK());
         assertEquals(2, stages.returnedCount());
+    }
+
+    @Test
+    void modelDecidedSplitSearchesEachSubQuestionAndInterleavesResults() {
+        when(searchService.searchWithTrace(eq("A 是什么？"), eq("7"), anyInt()))
+                .thenReturn(trace(List.of(result("a", "a.pdf", "HYBRID"), result("shared", "s.pdf", "HYBRID"))));
+        when(searchService.searchWithTrace(eq("B 是什么？"), eq("7"), anyInt()))
+                .thenReturn(trace(List.of(result("b", "b.pdf", "HYBRID"))));
+        llmReplies.add("{\"sub_questions\": [\"A 是什么？\", \"B 是什么？\"]}");
+        llmReplies.add("A 和 B 分别是……");
+        llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
+        EvalCase evalCase = new EvalCase("c2", "A 和 B 分别是什么？", List.of("a", "b"), List.of(), "答案");
+
+        EvalCaseResult result = runner.run(evalCase, "7", 3, noSampling, false, true);
+
+        assertEquals(List.of("A 是什么？", "B 是什么？"), result.stages().subQuestions());
+        assertNull(result.stages().planFallbackReason());
+        assertEquals(QuestionPlanner.SYSTEM_PROMPT, llmCalls.get(0).get(0).get("content"),
+                "第一次模型调用是拆分判定");
+        assertEquals("A 和 B 分别是什么？", llmCalls.get(0).get(1).get("content"));
+        // 两个子问题各自的第一条都在并集最前面，共用的片段只保留一次
+        assertEquals(3, result.retrieved().size());
+        assertEquals("a.pdf", result.retrieved().get(0).fileName());
+        assertEquals("b.pdf", result.retrieved().get(1).fileName());
+        assertEquals("s.pdf", result.retrieved().get(2).fileName());
+        assertTrue(result.retrievalHit());
+    }
+
+    @Test
+    void plannerFailureFallsBackToOriginalQuestion() {
+        when(searchService.searchWithTrace(eq("端口？"), eq("7"), anyInt()))
+                .thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
+        llmReplies.add("不拆");
+        llmReplies.add("端口是 8080");
+        llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling, false, true);
+
+        assertEquals(List.of(), result.stages().subQuestions());
+        assertTrue(result.stages().planFallbackReason().startsWith("拆分判定失败"));
+        assertEquals(EvalDiagnosis.OK, result.diagnosis());
+    }
+
+    @Test
+    void plannerSayingNoSplitSearchesOnceWithOriginalQuestion() {
+        when(searchService.searchWithTrace(eq("端口？"), eq("7"), anyInt()))
+                .thenReturn(trace(List.of(result("m1", "config.pdf", "HYBRID"))));
+        llmReplies.add("{\"sub_questions\": []}");
+        llmReplies.add("端口是 8080");
+        llmReplies.add("{\"score\": 5, \"correct\": true, \"reason\": \"一致\"}");
+
+        EvalCaseResult result = runner.run(evalCase(List.of("m1")), "7", 3, noSampling, false, true);
+
+        assertEquals(List.of(), result.stages().subQuestions());
+        assertNull(result.stages().planFallbackReason(), "模型判断不拆不是失败");
+        verify(searchService).searchWithTrace("端口？", "7", 3);
+        assertEquals(EvalDiagnosis.OK, result.diagnosis());
+    }
+
+    @Test
+    void clarifyFirstCaseOffersAskClarificationToolAndJudgesAgainstClarifyRule() throws Exception {
+        when(searchService.searchWithTrace(anyString(), eq("7"), anyInt()))
+                .thenReturn(trace(List.of(result("s4", "S04-product-critical-illness-2026-demo.md", "HYBRID"))));
+        when(router.buildRagMessages(anyString(), anyString(), anyString())).thenAnswer(invocation -> List.of(
+                Map.<String, Object>of("role", "system", "content", "规则\n" + invocation.getArgument(2)),
+                Map.<String, Object>of("role", "user", "content", invocation.getArgument(0))));
+        llmReplies.add("");
+        llmReplies.add("{\"score\": 4, \"correct\": true, \"reason\": \"先澄清\"}");
+        llmToolCalls.add(List.of(new LlmProviderRouter.ToolCallDecision("call-1", "ask_clarification",
+                Map.<String, Object>of("questions", List.of("您问的是哪款产品的哪个版本？")))));
+        EvalCase clarifyCase = new EvalCase("clarify-02", "等待期是多少天？", List.of(), List.of(),
+                "需要先确认产品和版本", List.of(), "clarify_first");
+
+        EvalCaseResult result = runner.run(clarifyCase, "7", 3, noSampling);
+
+        assertEquals("请补充以下信息：\n1. 您问的是哪款产品的哪个版本？", result.answer());
+        assertTrue(((String) llmCalls.get(0).get(0).get("content")).contains(RagEvalCaseRunner.CLARIFY_GENERATION_RULE),
+                "澄清用例的生成提示词要带澄清规则");
+        assertEquals(1, llmTools.get(0).size(), "只给澄清工具，不引入其他能力");
+        assertEquals("ask_clarification", llmTools.get(0).get(0).name());
+        String judgeSystem = (String) llmCalls.get(1).get(0).get("content");
+        assertTrue(judgeSystem.contains(RagEvalCaseRunner.CLARIFY_JUDGE_RULE), "评委按澄清口径判分");
+        assertEquals(4, result.judgeScore());
+        assertTrue(result.judgeCorrect());
     }
 
     private static EvalCase evalCase(List<String> md5s) {

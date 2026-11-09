@@ -14,6 +14,8 @@ import com.yizhaoqi.smartpai.config.DocumentConflictProperties;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScope;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScopeService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.Pageable;
@@ -22,6 +24,7 @@ import org.springframework.data.domain.SliceImpl;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,13 +41,15 @@ class ConflictCandidateFinderTest {
 
     private final ElasticsearchClient esClient = mock(ElasticsearchClient.class);
     private final DocumentVectorRepository vectorRepository = mock(DocumentVectorRepository.class);
+    private final ActiveRetrievalScopeService activeRetrievalScopeService = mock(ActiveRetrievalScopeService.class);
     private final DocumentConflictProperties properties = new DocumentConflictProperties();
     private final List<SearchRequest> knnRequests = new ArrayList<>();
     private ConflictCandidateFinder finder;
 
     @BeforeEach
     void setUp() {
-        finder = new ConflictCandidateFinder(esClient, vectorRepository, properties);
+        when(activeRetrievalScopeService.current()).thenReturn(new ActiveRetrievalScope(Set.of("b1"), Set.of()));
+        finder = new ConflictCandidateFinder(esClient, vectorRepository, properties, activeRetrievalScopeService);
     }
 
     @Test
@@ -79,24 +84,35 @@ class ConflictCandidateFinderTest {
     }
 
     @Test
-    void scopeFilterReusesPermissionFilterAndExcludesNewFile() {
-        Query scope = ConflictCandidateFinder.buildScopeFilter(NEW_MD5, "7", "dept-a");
+    void scopeFilterKeepsActiveBuildsAndExcludesNewFile() {
+        Query scope = ConflictCandidateFinder.buildScopeFilter(
+                NEW_MD5, new ActiveRetrievalScope(Set.of("b1"), Set.of()));
 
-        Query visibility = scope.bool().filter().get(0);
-        var should = visibility.bool().should();
-        assertEquals("userId", should.get(0).term().field());
-        assertEquals("7", should.get(0).term().value().stringValue());
-        assertEquals("public", should.get(1).term().field());
-        assertEquals("orgTag", should.get(2).terms().field());
-        assertEquals("dept-a", should.get(2).terms().terms().value().get(0).stringValue());
+        Query activeScope = scope.bool().filter().get(0);
+        assertEquals("buildId", activeScope.terms().field());
+        assertEquals(1, activeScope.terms().terms().value().size());
+        assertEquals("b1", activeScope.terms().terms().value().get(0).stringValue());
         assertEquals("fileMd5", scope.bool().mustNot().get(0).term().field());
         assertEquals(NEW_MD5, scope.bool().mustNot().get(0).term().value().stringValue());
     }
 
     @Test
-    void scopeFilterWithoutOrgTagOnlyKeepsOwnerAndPublic() {
-        Query scope = ConflictCandidateFinder.buildScopeFilter(NEW_MD5, "7", null);
-        assertEquals(2, scope.bool().filter().get(0).bool().should().size());
+    void scopeFilterExcludesSameDocumentHistory() {
+        Query scope = ConflictCandidateFinder.buildScopeFilter(
+                NEW_MD5, "doc-1", new ActiveRetrievalScope(Set.of("b1"), Set.of()));
+
+        assertEquals(2, scope.bool().mustNot().size());
+        assertEquals("fileMd5", scope.bool().mustNot().get(0).term().field());
+        assertEquals("documentId", scope.bool().mustNot().get(1).term().field());
+        assertEquals("doc-1", scope.bool().mustNot().get(1).term().value().stringValue());
+    }
+
+    @Test
+    void scopeFilterWithoutActiveBuildMatchesNothing() {
+        Query scope = ConflictCandidateFinder.buildScopeFilter(
+                NEW_MD5, new ActiveRetrievalScope(Set.of(), Set.of()));
+        Query activeScope = scope.bool().filter().get(0);
+        assertEquals("__no_active_build__", activeScope.terms().terms().value().get(0).stringValue());
     }
 
     @Test

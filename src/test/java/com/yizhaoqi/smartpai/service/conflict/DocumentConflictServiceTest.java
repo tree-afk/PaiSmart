@@ -88,8 +88,8 @@ class DocumentConflictServiceTest {
 
         DocumentConflict resolved = service.resolve(1L, Status.KEEP_NEW, "admin", "新文档是最新版");
 
-        verify(documentService).deleteDocument("old", "u2");
-        verify(documentService, never()).deleteDocument(eq("new"), anyString());
+        verify(documentService).deleteLegacyDocument("old", "u2");
+        verify(documentService, never()).deleteLegacyDocument(eq("new"), anyString());
         assertEquals(Status.KEEP_NEW, resolved.getStatus());
         assertEquals("admin", resolved.getResolvedBy());
         assertNotNull(resolved.getResolvedAt());
@@ -105,7 +105,7 @@ class DocumentConflictServiceTest {
 
         DocumentConflict resolved = service.resolve(1L, Status.KEEP_EXISTING, "admin", null);
 
-        verify(documentService).deleteDocument("new", "u1");
+        verify(documentService).deleteLegacyDocument("new", "u1");
         assertEquals(Status.KEEP_EXISTING, resolved.getStatus());
     }
 
@@ -115,7 +115,7 @@ class DocumentConflictServiceTest {
 
         DocumentConflict resolved = service.resolve(1L, Status.IGNORED, "admin", "不同环境的配置");
 
-        verify(documentService, never()).deleteDocument(anyString(), anyString());
+        verify(documentService, never()).deleteLegacyDocument(anyString(), anyString());
         verify(repository, never()).findByStatusAndFileMd5(any(), anyString());
         assertEquals(Status.IGNORED, resolved.getStatus());
     }
@@ -129,7 +129,7 @@ class DocumentConflictServiceTest {
         CustomException error = assertThrows(CustomException.class, () -> service.resolve(1L, Status.KEEP_NEW, "admin", null));
 
         assertEquals(HttpStatus.CONFLICT, error.getStatus());
-        verify(documentService, never()).deleteDocument(anyString(), anyString());
+        verify(documentService, never()).deleteLegacyDocument(anyString(), anyString());
     }
 
     @Test
@@ -154,7 +154,7 @@ class DocumentConflictServiceTest {
         DocumentConflict conflict = pending(1L);
         when(repository.findById(1L)).thenReturn(Optional.of(conflict));
         when(fileUploadRepository.findFirstByFileMd5OrderByCreatedAtDesc("old")).thenReturn(Optional.of(upload("old", "u2", "old.pdf")));
-        doThrow(new RuntimeException("minio down")).when(documentService).deleteDocument("old", "u2");
+        doThrow(new RuntimeException("minio down")).when(documentService).deleteLegacyDocument("old", "u2");
 
         assertThrows(RuntimeException.class, () -> service.resolve(1L, Status.KEEP_NEW, "admin", null));
 
@@ -170,7 +170,7 @@ class DocumentConflictServiceTest {
 
         DocumentConflict resolved = service.resolve(1L, Status.KEEP_NEW, "admin", null);
 
-        verify(documentService, never()).deleteDocument(anyString(), anyString());
+        verify(documentService, never()).deleteLegacyDocument(anyString(), anyString());
         assertEquals(Status.KEEP_NEW, resolved.getStatus());
         assertTrue(resolved.getResolutionNote().contains("已不存在"));
     }

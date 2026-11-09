@@ -72,8 +72,60 @@ class EvalReportAggregatorTest {
     }
 
     @Test
+    void summarizesLatencyFallbackAndCitationMetrics() {
+        EvalCaseResult hybrid = new EvalCaseResult("id", "q", "ref", List.of(), List.of(), List.of(), "HYBRID", List.of(),
+                true, true, 1, 1.0, 1.0, "answer [1]", 5, true, null, null, EvalDiagnosis.OK, false, null, null, 100L,
+                null, new EvalCaseResult.Timings(10, 50, 20, 100, 2L, 5L, 6L, 1L, 8L),
+                new CitationMetrics(1, 1, 1, 1.0, 1.0, false));
+        EvalCaseResult fallback = new EvalCaseResult("id2", "q2", "ref", List.of(), List.of(), List.of(), "TEXT_ONLY", List.of(),
+                null, null, null, null, null, "answer", null, null, null, null, EvalDiagnosis.GENERATION_FAILED,
+                false, null, null, 200L, null,
+                new EvalCaseResult.Timings(30, 0, 0, 200, null, null, null, null, null),
+                new CitationMetrics(0, 0, null, null, null, true));
+
+        EvalReport.EvalSummary summary = EvalReportAggregator.summarize(List.of(hybrid, fallback));
+
+        assertEquals(2, summary.latency().measuredCases());
+        assertEquals(100.0, summary.latency().p50TotalMs());
+        assertEquals(200.0, summary.latency().p95TotalMs());
+        assertEquals(1, summary.latency().fallbackCases());
+        assertEquals(0.5, summary.latency().fallbackRate());
+
+        assertEquals(2, summary.citation().citationCases());
+        assertEquals(1, summary.citation().uncitedCases());
+        assertEquals(1, summary.citation().traceableCases());
+        assertEquals(1, summary.citation().relevanceCases());
+        assertEquals(0.5, summary.citation().meanCitationsPerAnswer());
+        assertEquals(1.0, summary.citation().meanTraceability());
+        assertEquals(1.0, summary.citation().meanRelevance());
+    }
+
+    @Test
+    void aggregatesEvidenceCoverageAtKDeliveredAndCandidatePool() {
+        EvalCaseResult half = staged(0.5, 1.0, 1.0, List.of());
+        EvalCaseResult full = staged(1.0, 1.0, 0.75, List.of("子问题一", "子问题二"));
+
+        EvalReport.EvalSummary summary = EvalReportAggregator.summarize(List.of(half, full));
+
+        assertEquals(2, summary.stages().coverageCases());
+        assertEquals(0.75, summary.stages().meanEvidenceCoverageAtK());
+        assertEquals(1.0, summary.stages().meanEvidenceCoverageDelivered());
+        assertEquals(0.875, summary.stages().meanCandidateEvidenceCoverage());
+        assertEquals(1, summary.stages().decomposedCases(), "拆出两个子问题的用例才算拆分");
+    }
+
+    @Test
     void guideDescribesEveryDiagnosis() {
         assertEquals(EvalDiagnosis.values().length, EvalReportAggregator.diagnosisGuide().size());
+    }
+
+    private static EvalCaseResult staged(Double coverageAtK, Double delivered, Double candidateCoverage,
+                                        List<String> subQuestions) {
+        EvalCaseResult.Stages stages = new EvalCaseResult.Stages(true, 10, 2, 0.5, true, 1, true, 1, 0, 0.4, 3, 5,
+                List.of(), coverageAtK, delivered, candidateCoverage, subQuestions, null);
+        return new EvalCaseResult("id", "q", "ref", List.of(), List.of(), List.of(), "HYBRID", List.of(),
+                true, true, 1, 1.0, 1.0, "answer", 5, true, null, null, EvalDiagnosis.OK, false, null, null, 1L,
+                stages, null, null);
     }
 
     private static EvalCaseResult result(String mode, Boolean hit, Integer rank, Double rr,

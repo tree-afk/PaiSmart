@@ -1,8 +1,10 @@
 package com.yizhaoqi.smartpai.repository;
 
 import com.yizhaoqi.smartpai.model.FileUpload;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,6 +18,14 @@ import java.util.Set;
 
 @Repository
 public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
+    /**
+     * 锁定上传记录行：legacy 登记与 COMPLETED 恢复补建都先锁这一行，
+     * 把同一上传的并发调用串行化，后到者看到已提交的版本后直接复用。
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select f from FileUpload f where f.id = :id")
+    Optional<FileUpload> findByIdForUpdate(@Param("id") Long id);
+
     Optional<FileUpload> findFirstByFileMd5OrderByCreatedAtDesc(String fileMd5);
 
     List<FileUpload> findAllByFileMd5(String fileMd5);
@@ -29,6 +39,8 @@ public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
     Optional<FileUpload> findFirstByFileMd5AndIsPublicTrueOrderByCreatedAtDesc(String fileMd5);
 
     Optional<FileUpload> findFirstByFileNameAndIsPublicTrueOrderByCreatedAtDesc(String fileName);
+
+    Optional<FileUpload> findFirstByFileNameOrderByCreatedAtDesc(String fileName);
 
     Optional<FileUpload> findFirstByOrderByMergedAtDesc();
     
@@ -189,6 +201,16 @@ public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
     int requeueStaleVectorization(@Param("id") Long id,
                                   @Param("observedHeartbeat") LocalDateTime observedHeartbeat,
                                   @Param("now") LocalDateTime now);
+
+    @Transactional
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("UPDATE FileUpload f SET f.vectorizationStatus = 'COMPLETED', f.vectorizationErrorMessage = null, " +
+            "f.processingStartedAt = null, f.heartbeatAt = :now " +
+            "WHERE f.id = :id AND f.vectorizationStatus = 'PROCESSING' " +
+            "AND ((:observedHeartbeat IS NULL AND f.heartbeatAt IS NULL) OR f.heartbeatAt = :observedHeartbeat)")
+    int completeStaleVectorization(@Param("id") Long id,
+                                   @Param("observedHeartbeat") LocalDateTime observedHeartbeat,
+                                   @Param("now") LocalDateTime now);
 
     @Transactional
     @Modifying(flushAutomatically = true, clearAutomatically = true)

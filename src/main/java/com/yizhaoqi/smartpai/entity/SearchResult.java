@@ -18,7 +18,23 @@ public class SearchResult {
     private String retrievalMode; // 召回方式
     private String matchedChunkText; // 命中的 chunk 原文
     private String parentContext; // 父子检索：命中分块连同相邻分块的父块文本，只交给模型，不用于引用和证据片段
-    private String parentKey;     // 父块标识 fileMd5#起始chunkId-结束chunkId，多个命中共用一个父块时相同
+    private String parentKey;     // 父块标识 buildId（legacy 为 fileMd5）#起始chunkId-结束chunkId，多个命中共用一个父块时相同
+    private String documentId;    // 所属业务文档
+    private String versionId;     // 内容版本
+    private String buildId;       // 构建批次，父块扩展按它取相邻分块，不同构建的分块不会混在一起
+    private Integer versionNo;    // 内容版本号
+    private String docType;       // 合规文档类型，Step 2 检索过滤使用
+    private String jurisdiction;  // 适用地区显示值
+    private String jurisdictionCode; // 归一化地区编码
+    private String issuer;        // 发布机构
+    private String applicableInstitutions; // 资料适用机构/主体
+    private String effectiveAt;   // 版本生效日期，ISO yyyy-MM-dd
+    private String expiresAt;     // 版本失效日期，ISO yyyy-MM-dd
+    private Boolean repealed;     // 是否已废止
+    private String validityStatus; // 派生效力状态：UNCONFIRMED/PENDING/EFFECTIVE/EXPIRED/REPEALED
+    private String validityLabel;  // 效力状态中文标签
+    private String articlePath;   // 条款路径，如 "第三章 风险管理 > 第十二条"
+    private String clauseNo;      // 条款号，如 "第十二条" 或 "第十二条第二款"
 
     public SearchResult(String fileMd5, Integer chunkId, String textContent, Double score) {
         this(fileMd5, chunkId, textContent, score, null, null, false, null, null, null, null, null);
@@ -67,6 +83,22 @@ public class SearchResult {
         copy.setRawScore(rawScore);
         copy.setParentContext(parentContext);
         copy.setParentKey(parentKey);
+        copy.setDocumentId(documentId);
+        copy.setVersionId(versionId);
+        copy.setBuildId(buildId);
+        copy.setVersionNo(versionNo);
+        copy.setDocType(docType);
+        copy.setJurisdiction(jurisdiction);
+        copy.setJurisdictionCode(jurisdictionCode);
+        copy.setIssuer(issuer);
+        copy.setApplicableInstitutions(applicableInstitutions);
+        copy.setEffectiveAt(effectiveAt);
+        copy.setExpiresAt(expiresAt);
+        copy.setRepealed(repealed);
+        copy.setValidityStatus(validityStatus);
+        copy.setValidityLabel(validityLabel);
+        copy.setArticlePath(articlePath);
+        copy.setClauseNo(clauseNo);
         return copy;
     }
 }

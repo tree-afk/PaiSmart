@@ -88,6 +88,12 @@
               <p class="support-copy">{{ resolvedHighlightAnchor }}</p>
             </section>
 
+            <section v-if="articlePath || clauseNo" class="info-card">
+              <span class="info-label">条款定位</span>
+              <p v-if="articlePath" class="support-copy">{{ articlePath }}</p>
+              <p v-if="clauseNo" class="support-copy">条款号：{{ clauseNo }}</p>
+            </section>
+
           </aside>
 
           <section class="preview-stage">
@@ -172,6 +178,8 @@ interface Props {
   matchedChunkText?: string;
   score?: number | null;
   chunkId?: number | null;
+  articlePath?: string;
+  clauseNo?: string;
   visible: boolean;
 }
 

@@ -35,6 +35,10 @@ export function setupElegantRouter() {
         meta.constant = true;
       }
 
+      if (key === 'chat-history') {
+        meta.roles = ['ADMIN'];
+      }
+
       return meta;
     }
   });

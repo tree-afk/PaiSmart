@@ -32,6 +32,9 @@ public class RagEvalProperties {
     private int maxRetryTokens = 8000;
     private int generationTimeoutSeconds = 90;
     private int judgeTimeoutSeconds = 60;
+    /** 检索前"要不要拆子问题"的判定调用：输出只有几个短问句，给小预算即可 */
+    private int plannerMaxTokens = 512;
+    private int plannerTimeoutSeconds = 30;
     /** 送给评委的每条检索证据最大字符数 */
     private int maxEvidenceChars = 800;
     /** 生成和评委调用使用的请求方 ID，以 system 开头可豁免用户配额；检索仍以发起评测的管理员身份执行 */

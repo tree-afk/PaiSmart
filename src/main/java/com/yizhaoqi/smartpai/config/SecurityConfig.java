@@ -28,6 +28,9 @@ public class SecurityConfig {
     @Autowired
     private OrgTagAuthorizationFilter orgTagAuthorizationFilter;
 
+    @Autowired
+    private KnowledgeAuthorizationFilter knowledgeAuthorizationFilter;
+
     /**
      * 配置SecurityFilterChain bean的方法
      * 该方法主要用于配置应用的安全规则，包括哪些请求需要授权、CSRF保护的启用或禁用、会话管理策略等
@@ -79,6 +82,8 @@ public class SecurityConfig {
                             .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                     // 添加JWT认证过滤器
                     .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                    // knowledge_role 请求级校验：文件管理/角色管理不认旧 ADMIN 身份
+                    .addFilterAfter(knowledgeAuthorizationFilter, JwtAuthenticationFilter.class)
                     // 添加组织标签授权过滤器
                     .addFilterAfter(orgTagAuthorizationFilter, JwtAuthenticationFilter.class);
 

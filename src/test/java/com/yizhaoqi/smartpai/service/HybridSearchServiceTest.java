@@ -16,15 +16,21 @@ import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.model.User;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.repository.UserRepository;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScope;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScopeService;
+import com.yizhaoqi.smartpai.service.document.ComplianceSearchFilter;
 import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +51,7 @@ class HybridSearchServiceTest {
     private final UserRepository userRepository = mock(UserRepository.class);
     private final OrgTagCacheService orgTagCacheService = mock(OrgTagCacheService.class);
     private final FileUploadRepository fileUploadRepository = mock(FileUploadRepository.class);
+    private final ActiveRetrievalScopeService activeRetrievalScopeService = mock(ActiveRetrievalScopeService.class);
     private final HybridSearchProperties properties = new HybridSearchProperties();
     private final ContextualRetrievalProperties contextualProperties = new ContextualRetrievalProperties();
     private final List<SearchRequest> capturedRequests = Collections.synchronizedList(new ArrayList<>());
@@ -57,8 +64,10 @@ class HybridSearchServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        // 版本范围为空：仍保留 legacy 分支过滤（排除未生效 build），本测试主要验证原有检索逻辑
+        when(activeRetrievalScopeService.current()).thenReturn(new ActiveRetrievalScope(Set.of(), Set.of()));
         service = new HybridSearchService(esClient, embeddingClient, rerankClient, properties, contextualProperties,
-                userRepository, orgTagCacheService, fileUploadRepository, Runnable::run);
+                userRepository, orgTagCacheService, fileUploadRepository, activeRetrievalScopeService, Runnable::run);
 
         User user = new User();
         user.setId(7L);
@@ -108,6 +117,8 @@ class HybridSearchServiceTest {
         assertEquals(0.91, results.get(0).getScore(), 1e-9);
         assertEquals("HYBRID", results.get(0).getRetrievalMode());
         assertEquals("manual.pdf", results.get(0).getFileName());
+        assertEquals("第二章 风险管理 > 第十二条", results.get(0).getArticlePath());
+        assertEquals("第十二条第二款", results.get(0).getClauseNo());
         verify(rerankClient).rerank("E1024 错误码", List.of("text-both", "text-kw", "text-vec"));
     }
 
@@ -218,8 +229,8 @@ class HybridSearchServiceTest {
         assertEquals(150L, knn.knn().get(0).k());
         assertTrue(knn.query() == null, "KNN 路不再要求必须命中关键词");
         assertTrue(knn.rescore().isEmpty(), "不再使用 rescore");
-        assertPermissionFilter(bm25.query().bool().filter().get(0));
-        assertPermissionFilter(knn.knn().get(0).filter().get(0));
+        assertEquals("buildId", bm25.query().bool().filter().get(0).bool().must().get(0).terms().field());
+        assertEquals("buildId", knn.knn().get(0).filter().get(0).bool().must().get(0).terms().field());
     }
 
     @Test
@@ -235,7 +246,7 @@ class HybridSearchServiceTest {
         SearchRequest request = capturedRequests.get(0);
         assertTrue(request.knn().isEmpty());
         assertTrue(request.minScore() == null, "不是纯文本降级");
-        assertPermissionFilter(request.query().bool().filter().get(0));
+        assertEquals("buildId", request.query().bool().filter().get(0).bool().must().get(0).terms().field());
         assertEquals(List.of(2, 1), results.stream().map(SearchResult::getChunkId).toList());
         assertTrue(results.stream().allMatch(r -> "BM25_ONLY".equals(r.getRetrievalMode())));
     }
@@ -347,6 +358,26 @@ class HybridSearchServiceTest {
     }
 
     @Test
+    void searchResultCarriesComplianceMetadataAndKeepsItThroughParentContext() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of(new RerankClient.RerankHit(0, 0.9)));
+
+        SearchResult result = service.searchWithPermission("q", "7", 1).get(0);
+
+        assertEquals("REGULATION", result.getDocType());
+        assertEquals("全国", result.getJurisdiction());
+        assertEquals("国家金融监督管理总局", result.getIssuer());
+        assertEquals("2026-10-01", result.getEffectiveAt());
+
+        SearchResult withParent = result.withParentContext("父块文本", "pk");
+        assertEquals("REGULATION", withParent.getDocType());
+        assertEquals("全国", withParent.getJurisdiction());
+        assertEquals("国家金融监督管理总局", withParent.getIssuer());
+        assertEquals("2026-10-01", withParent.getEffectiveAt());
+        assertEquals(result.getDocumentId(), withParent.getDocumentId());
+        assertEquals(result.getVersionId(), withParent.getVersionId());
+    }
+
+    @Test
     void recallWindowIsBoundedByConfig() {
         assertEquals(150, service.recallWindow(5));
         assertEquals(300, service.recallWindow(20));
@@ -354,19 +385,131 @@ class HybridSearchServiceTest {
         assertEquals(20, service.recallWindow(20), "窗口至少不小于 topK");
     }
 
+    private SearchRequest bm25Request() {
+        return capturedRequests.stream()
+                .filter(r -> r.knn().isEmpty() && r.minScore() == null)
+                .findFirst().orElseThrow();
+    }
+
+    private SearchRequest knnRequest() {
+        return capturedRequests.stream().filter(r -> !r.knn().isEmpty()).findFirst().orElseThrow();
+    }
+
     private static void assertPermissionFilter(Query filter) {
-        var should = filter.bool().should();
+        // 空版本范围也会生成 legacy 分支，合规过滤再叠加一层：权限、版本、合规在同一个 bool 的 must 里
+        Query permission = filter.bool().must().isEmpty() ? filter : filter.bool().must().get(0);
+        var should = permission.bool().should();
         assertEquals(3, should.size());
         assertEquals("userId", should.get(0).term().field());
         assertEquals("7", should.get(0).term().value().stringValue());
         assertEquals("public", should.get(1).term().field());
         assertEquals("orgTag", should.get(2).terms().field());
         assertEquals(2, should.get(2).terms().terms().value().size());
-        assertEquals("1", filter.bool().minimumShouldMatch());
+        assertEquals("1", permission.bool().minimumShouldMatch());
+    }
+
+    @Test
+    void customComplianceFilterReachesBm25AndKnnPaths() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of());
+        ComplianceSearchFilter complianceFilter = ComplianceSearchFilter.fromCodes(
+                List.of("REGULATION"), List.of("全国"), LocalDate.of(2026, 10, 1));
+
+        service.searchWithPermission("q", "7", 5, complianceFilter);
+
+        Query bm25Compliance = complianceClause(bm25Request().query().bool().filter().get(0));
+        assertComplianceTerms(bm25Compliance, "2026-10-01");
+        Query knnCompliance = complianceClause(knnRequest().knn().get(0).filter().get(0));
+        assertComplianceTerms(knnCompliance, "2026-10-01");
+    }
+
+    @Test
+    void textOnlyFallbackCarriesCustomComplianceFilter() {
+        bm25Failure = new RuntimeException("bm25 failed");
+        knnFailure = new RuntimeException("knn failed");
+        ComplianceSearchFilter complianceFilter = ComplianceSearchFilter.fromCodes(
+                List.of("INTERNAL_POLICY"), List.of("上海"), LocalDate.of(2026, 9, 30));
+
+        service.searchWithPermission("q", "7", 5, complianceFilter);
+
+        SearchRequest textOnly = capturedRequests.get(capturedRequests.size() - 1);
+        assertEquals(0.3, textOnly.minScore(), 1e-9);
+        Query combined = textOnly.query().bool().filter().get(0);
+        assertTrue(combined.isBool());
+        assertEquals(2, combined.bool().must().size(), "降级路径同样带共享库版本和合规过滤");
+        Query compliance = combined.bool().must().get(1);
+        assertEquals(Set.of("INTERNAL_POLICY"), termValues(compliance.bool().must().get(0)));
+        assertEquals(Set.of("上海", "NATIONAL"), termValuesForField(compliance.bool().must().get(1), "jurisdictionCode"));
+        assertEquals("2026-09-30",
+                compliance.bool().must().get(2).bool().should().get(0).range().lte().to(String.class));
+    }
+
+    @Test
+    void defaultOverloadsUseCurrentEffectiveComplianceFilter() {
+        when(rerankClient.rerank(anyString(), anyList())).thenReturn(List.of());
+
+        service.searchWithTrace("q", "7", 5);
+
+        Query combined = bm25Request().query().bool().filter().get(0);
+        Query compliance = complianceClause(combined);
+        assertEquals("effectiveAt", compliance.bool().must().get(0).bool().should().get(0).range().field());
+        assertEquals(LocalDate.now().toString(),
+                compliance.bool().must().get(0).bool().should().get(0).range().lte().to(String.class),
+                "没有显式过滤时按今天的当前可检索口径检索");
+        assertEquals("expiresAt", compliance.bool().must().get(1).bool().should().get(0).range().field());
+        assertTrue(compliance.bool().mustNot().get(0).isTerm(), "废止标记必须排除");
+    }
+
+    private static Query complianceClause(Query combined) {
+        assertTrue(combined.isBool());
+        assertEquals(2, combined.bool().must().size(), "版本、合规两条过滤必须同时存在");
+        Query compliance = combined.bool().must().get(1);
+        assertTrue(compliance.isBool());
+        return compliance;
+    }
+
+    private static void assertComplianceTerms(Query compliance, String asOf) {
+        assertEquals(Set.of("REGULATION"), termValues(compliance.bool().must().get(0)));
+        assertEquals(Set.of("NATIONAL"), termValuesForField(compliance.bool().must().get(1), "jurisdictionCode"));
+        Query current = compliance.bool().must().get(2);
+        assertEquals("effectiveAt", current.bool().should().get(0).range().field());
+        assertEquals(asOf, current.bool().should().get(0).range().lte().to(String.class));
+        assertTrue(current.bool().should().get(1).bool().mustNot().get(0).isExists(),
+                "没有 effectiveAt 的 legacy 文档仍然可检索");
+        Query notExpired = compliance.bool().must().get(3);
+        assertEquals("expiresAt", notExpired.bool().should().get(0).range().field());
+        assertEquals(asOf, notExpired.bool().should().get(0).range().gte().to(String.class));
+        assertTrue(compliance.bool().mustNot().get(0).isTerm(), "废止标记必须排除");
+    }
+
+    private static Set<String> termValuesForField(Query bool, String field) {
+        assertTrue(bool.isBool());
+        return bool.bool().should().stream()
+                .filter(Query::isTerms)
+                .filter(terms -> terms.terms().field().equals(field))
+                .findFirst()
+                .map(HybridSearchServiceTest::termValues)
+                .orElseThrow(() -> new AssertionError("缺少 terms 字段: " + field));
+    }
+
+    private static Set<String> termValues(Query terms) {
+        assertTrue(terms.isTerms());
+        return terms.terms().terms().value().stream()
+                .map(co.elastic.clients.elasticsearch._types.FieldValue::stringValue)
+                .collect(Collectors.toSet());
     }
 
     private static Hit<EsDocument> hit(String id, int chunkId) {
         EsDocument doc = new EsDocument(id, "md5", chunkId, "text-" + id, null, null, null, "v1", "7", "dept-a", false);
+        doc.setDocumentId("doc-1");
+        doc.setVersionId("version-1");
+        doc.setBuildId("build-1");
+        doc.setDocType("REGULATION");
+        doc.setJurisdiction("全国");
+        doc.setJurisdictionCode("NATIONAL");
+        doc.setIssuer("国家金融监督管理总局");
+        doc.setEffectiveAt("2026-10-01");
+        doc.setArticlePath("第二章 风险管理 > 第十二条");
+        doc.setClauseNo("第十二条第二款");
         return Hit.of(h -> h.index("knowledge_base_v1").id(id).score(1.0).source(doc));
     }
 

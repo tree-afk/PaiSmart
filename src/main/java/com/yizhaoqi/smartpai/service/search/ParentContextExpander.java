@@ -21,7 +21,7 @@ import java.util.Optional;
  *     <li>所有父块总字符数受 maxTotalChars 约束，预算用完后剩余命中只给小分块；</li>
  *     <li>引用、页码、锚点和证据片段仍然来自命中的小分块，父块只影响模型看到的上下文。</li>
  * </ul>
- * 相邻分块来自命中分块所在的同一文件，文件级权限已经在检索时校验过。
+ * 相邻分块来自命中分块所在的同一文件（新构建为同一 buildId，legacy 为同一 fileMd5），文件级权限已经在检索时校验过。
  */
 @Service
 public class ParentContextExpander {
@@ -48,7 +48,7 @@ public class ParentContextExpander {
         List<ParentBlock> blocks = new ArrayList<>();
         List<SearchResult> expanded = new ArrayList<>(hits.size());
         for (SearchResult hit : hits) {
-            if (hit == null || hit.getFileMd5() == null || hit.getChunkId() == null) {
+            if (hit == null || hit.getChunkId() == null || (hit.getBuildId() == null && hit.getFileMd5() == null)) {
                 expanded.add(hit);
                 continue;
             }
@@ -76,13 +76,20 @@ public class ParentContextExpander {
         if (neighbours == 0) {
             return Optional.empty();
         }
+        String keyBase = keyOf(hit);
         List<DocumentVector> window;
         try {
-            window = documentVectorRepository.findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc(
-                    hit.getFileMd5(), hit.getChunkId() - neighbours, hit.getChunkId() + neighbours);
+            // 新构建按 buildId 取邻居，避免同一文件多次构建的分块混在一起；legacy 数据没有 buildId，回退到 fileMd5
+            if (hit.getBuildId() != null) {
+                window = documentVectorRepository.findByBuildIdAndChunkIdBetweenOrderByChunkIdAsc(
+                        hit.getBuildId(), hit.getChunkId() - neighbours, hit.getChunkId() + neighbours);
+            } else {
+                window = documentVectorRepository.findByFileMd5AndChunkIdBetweenOrderByChunkIdAsc(
+                        hit.getFileMd5(), hit.getChunkId() - neighbours, hit.getChunkId() + neighbours);
+            }
         } catch (Exception e) {
-            logger.warn("读取相邻分块失败，只使用命中分块: fileMd5={}, chunkId={}, error={}",
-                    hit.getFileMd5(), hit.getChunkId(), e.getMessage());
+            logger.warn("读取相邻分块失败，只使用命中分块: key={}, chunkId={}, error={}",
+                    keyBase, hit.getChunkId(), e.getMessage());
             return Optional.empty();
         }
         int anchor = indexOf(window, hit.getChunkId());
@@ -107,9 +114,16 @@ public class ParentContextExpander {
         if (lo == hi) {
             return Optional.empty();
         }
-        String key = hit.getFileMd5() + "#" + window.get(lo).getChunkId() + "-" + window.get(hi).getChunkId();
-        return Optional.of(new ParentBlock(hit.getFileMd5(), window.get(lo).getChunkId(), window.get(hi).getChunkId(),
+        String key = keyBase + "#" + window.get(lo).getChunkId() + "-" + window.get(hi).getChunkId();
+        return Optional.of(new ParentBlock(keyBase, window.get(lo).getChunkId(), window.get(hi).getChunkId(),
                 merge(window, lo, hi), key));
+    }
+
+    /**
+     * 父块的归属键：新构建用 buildId，legacy 用 fileMd5；两者都不混用，保证不同构建的命中不会共用父块
+     */
+    private static String keyOf(SearchResult hit) {
+        return hit.getBuildId() != null ? hit.getBuildId() : hit.getFileMd5();
     }
 
     private static int indexOf(List<DocumentVector> window, int chunkId) {
@@ -129,9 +143,9 @@ public class ParentContextExpander {
         return ChunkTextMerger.merge(window.subList(lo, hi + 1).stream().map(DocumentVector::getTextContent).toList());
     }
 
-    private record ParentBlock(String fileMd5, int fromChunkId, int toChunkId, String text, String key) {
+    private record ParentBlock(String keyBase, int fromChunkId, int toChunkId, String text, String key) {
         boolean covers(SearchResult hit) {
-            return fileMd5.equals(hit.getFileMd5()) && hit.getChunkId() >= fromChunkId && hit.getChunkId() <= toChunkId;
+            return keyBase.equals(keyOf(hit)) && hit.getChunkId() >= fromChunkId && hit.getChunkId() <= toChunkId;
         }
     }
 }

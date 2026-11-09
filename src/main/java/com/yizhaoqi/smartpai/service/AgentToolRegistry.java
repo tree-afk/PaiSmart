@@ -7,14 +7,25 @@ import co.elastic.clients.elasticsearch.indices.IndicesStatsResponse;
 import co.elastic.clients.elasticsearch.indices.stats.IndicesStats;
 import com.yizhaoqi.smartpai.client.DeepSeekClient;
 import com.yizhaoqi.smartpai.entity.SearchResult;
-import com.yizhaoqi.smartpai.model.FileUpload;
-import com.yizhaoqi.smartpai.repository.FileUploadRepository;
+import com.yizhaoqi.smartpai.model.DocumentComplianceType;
+import com.yizhaoqi.smartpai.model.PublicationStatus;
+import com.yizhaoqi.smartpai.repository.BusinessDocumentRepository;
+import com.yizhaoqi.smartpai.service.document.ActiveRetrievalScopeService;
+import com.yizhaoqi.smartpai.service.document.ComplianceSearchFilter;
+import com.yizhaoqi.smartpai.service.document.DocumentRetrievalFilter;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import com.yizhaoqi.smartpai.service.search.ParentContextExpander;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -30,40 +41,68 @@ public class AgentToolRegistry {
     private static final String KNOWLEDGE_INDEX = KnowledgeIndexNames.ALIAS;
     private static final int DEFAULT_TOP_K = 5;
     private static final int MAX_SEARCH_DOCS = 20;
+    private static final Logger logger = LoggerFactory.getLogger(AgentToolRegistry.class);
 
     private final HybridSearchService hybridSearchService;
     private final DeepSeekClient deepSeekClient;
     private final StringRedisTemplate stringRedisTemplate;
     private final ElasticsearchClient elasticsearchClient;
-    private final FileUploadRepository fileUploadRepository;
+    private final BusinessDocumentRepository businessDocumentRepository;
+    private final ActiveRetrievalScopeService activeRetrievalScopeService;
     private final ParentContextExpander parentContextExpander;
+    private final AnswerFeedbackService answerFeedbackService;
     private final List<AgentTool> tools;
     private final Map<String, ToolHandler> handlers;
 
+    @Autowired
     public AgentToolRegistry(HybridSearchService hybridSearchService,
                              DeepSeekClient deepSeekClient,
                              StringRedisTemplate stringRedisTemplate,
                              ElasticsearchClient elasticsearchClient,
-                             FileUploadRepository fileUploadRepository,
-                             ParentContextExpander parentContextExpander) {
+                             BusinessDocumentRepository businessDocumentRepository,
+                             ActiveRetrievalScopeService activeRetrievalScopeService,
+                             ParentContextExpander parentContextExpander,
+                             AnswerFeedbackService answerFeedbackService) {
         this.hybridSearchService = hybridSearchService;
         this.deepSeekClient = deepSeekClient;
         this.stringRedisTemplate = stringRedisTemplate;
         this.elasticsearchClient = elasticsearchClient;
-        this.fileUploadRepository = fileUploadRepository;
+        this.businessDocumentRepository = businessDocumentRepository;
+        this.activeRetrievalScopeService = activeRetrievalScopeService;
         this.parentContextExpander = parentContextExpander;
+        this.answerFeedbackService = answerFeedbackService;
         this.tools = List.of(
+                planQuestionTool(),
                 searchKnowledgeTool(),
+                reportEvidenceTool(),
                 generateSummaryTool(),
                 submitFeedbackTool(),
+                askClarificationTool(),
                 knowledgeStatsTool()
         );
         this.handlers = Map.of(
+                "plan_question", this::executePlanQuestion,
                 "search_knowledge", this::executeSearchKnowledge,
+                "report_evidence", this::executeReportEvidence,
                 "generate_summary", this::executeGenerateSummary,
                 "submit_feedback", this::executeSubmitFeedback,
+                "ask_clarification", this::executeAskClarification,
                 "knowledge_stats", this::executeKnowledgeStats
         );
+    }
+
+    /**
+     * 兼容测试和旧装配：不落 MySQL 反馈，只保留 Redis 行为
+     */
+    public AgentToolRegistry(HybridSearchService hybridSearchService,
+                             DeepSeekClient deepSeekClient,
+                             StringRedisTemplate stringRedisTemplate,
+                             ElasticsearchClient elasticsearchClient,
+                             BusinessDocumentRepository businessDocumentRepository,
+                             ActiveRetrievalScopeService activeRetrievalScopeService,
+                             ParentContextExpander parentContextExpander) {
+        this(hybridSearchService, deepSeekClient, stringRedisTemplate, elasticsearchClient,
+                businessDocumentRepository, activeRetrievalScopeService, parentContextExpander, null);
     }
 
     public List<AgentTool> getTools() {
@@ -84,11 +123,89 @@ public class AgentToolRegistry {
                                            Map<String, Object> arguments,
                                            String userId,
                                            Consumer<String> onChunk) {
+        return executeTool(name, arguments, userId, onChunk, null);
+    }
+
+    /**
+     * @param inheritedComplianceFilter generate_summary 未显式给出类型/地区时沿用的检索条件；
+     *                                  由 ChatHandler 传入最近一次 search_knowledge 的条件
+     */
+    public ToolExecutionResult executeTool(String name,
+                                           Map<String, Object> arguments,
+                                           String userId,
+                                           Consumer<String> onChunk,
+                                           ComplianceSearchFilter inheritedComplianceFilter) {
+        Map<String, Object> effectiveArguments = arguments == null ? Collections.emptyMap() : arguments;
+        if ("generate_summary".equals(name)) {
+            return executeSummary(effectiveArguments, userId, onChunk, inheritedComplianceFilter, 1);
+        }
         ToolHandler handler = handlers.get(name);
         if (handler == null) {
             throw new IllegalArgumentException("未注册的工具: " + name);
         }
-        return handler.execute(arguments == null ? Collections.emptyMap() : arguments, userId, onChunk);
+        return handler.execute(effectiveArguments, userId, onChunk);
+    }
+
+    /**
+     * 摘要专用入口：外层已经分配了全局引用编号时，摘要提示词和返回的来源必须从同一个编号开始；
+     * 同时摘要不再边生成边输出，先由调用方登记来源映射，再统一输出。
+     */
+    public ToolExecutionResult executeSummary(Map<String, Object> arguments,
+                                              String userId,
+                                              Consumer<String> onChunk,
+                                              ComplianceSearchFilter inheritedComplianceFilter,
+                                              int firstReferenceNumber) {
+        return executeSummary(arguments, userId, onChunk, inheritedComplianceFilter, firstReferenceNumber, null);
+    }
+
+    public ToolExecutionResult executeSummary(Map<String, Object> arguments,
+                                              String userId,
+                                              Consumer<String> onChunk,
+                                              ComplianceSearchFilter inheritedComplianceFilter,
+                                              int firstReferenceNumber,
+                                              Consumer<Runnable> cancelRegistrar) {
+        return executeGenerateSummary(arguments == null ? Collections.emptyMap() : arguments,
+                userId, onChunk, inheritedComplianceFilter, Math.max(firstReferenceNumber, 1), cancelRegistrar);
+    }
+
+    private ToolExecutionResult executePlanQuestion(Map<String, Object> arguments,
+                                                    String userId,
+                                                    Consumer<String> onChunk) {
+        List<String> subQuestions = QuestionPlan.normalizeSubQuestions(arguments.get("subQuestions"));
+        StringBuilder content = new StringBuilder("已记录 ")
+                .append(subQuestions.size()).append(" 个子问题：\n");
+        for (int i = 0; i < subQuestions.size(); i++) {
+            content.append(i + 1).append(". ").append(subQuestions.get(i)).append('\n');
+        }
+        content.append("\n请分别调用 search_knowledge 检索每个子问题，并在 subQuestionIndex 填写对应编号；")
+                .append("全部子问题检索后再给出最终回答。");
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("subQuestions", subQuestions);
+        return new ToolExecutionResult("plan_question", true, content.toString(), data, false);
+    }
+
+    private ToolExecutionResult executeAskClarification(Map<String, Object> arguments,
+                                                        String userId,
+                                                        Consumer<String> onChunk) {
+        Object raw = arguments.get("questions");
+        if (!(raw instanceof List<?> list) || list.isEmpty() || list.size() > 3) {
+            throw new IllegalArgumentException("questions 需要 1-3 个");
+        }
+        List<String> questions = new ArrayList<>(list.size());
+        for (Object item : list) {
+            String text = item instanceof String value ? value.trim() : "";
+            if (text.isEmpty()) {
+                throw new IllegalArgumentException("questions 不能包含空问题");
+            }
+            questions.add(text);
+        }
+        StringBuilder content = new StringBuilder("为了给出准确结论，还需要你确认以下信息：\n");
+        for (int i = 0; i < questions.size(); i++) {
+            content.append(i + 1).append(". ").append(questions.get(i)).append('\n');
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("questions", questions);
+        return new ToolExecutionResult("ask_clarification", true, content.toString().trim(), data, false);
     }
 
     private ToolExecutionResult executeSearchKnowledge(Map<String, Object> arguments,
@@ -97,35 +214,138 @@ public class AgentToolRegistry {
         requireUserId(userId);
         String query = getRequiredString(arguments, "query");
         int topK = getInt(arguments, "topK", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
+        ComplianceSearchFilter complianceFilter = buildComplianceFilter(arguments);
 
         // 小分块检索、父块交给模型：引用和证据片段仍指向命中的小分块
-        List<SearchResult> results = expandParents(hybridSearchService.searchWithPermission(query, userId, topK));
+        List<SearchResult> results = expandParents(
+                hybridSearchService.searchWithPermission(query, userId, topK, complianceFilter));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("query", query);
         data.put("topK", topK);
+        data.put("complianceFilter", complianceFilterData(complianceFilter));
         data.put("results", results);
         return new ToolExecutionResult("search_knowledge", true, formatSearchResults(results), data);
+    }
+
+    /**
+     * 工具只接受用户明确给出的文档类型和地区；没有 asOf 参数，现行有效日期固定取今天
+     */
+    private ComplianceSearchFilter buildComplianceFilter(Map<String, Object> arguments) {
+        return ComplianceSearchFilter.fromCodes(
+                getOptionalStringList(arguments, "docTypes"),
+                getOptionalStringList(arguments, "jurisdictions"),
+                LocalDate.now());
+    }
+
+    private Map<String, Object> complianceFilterData(ComplianceSearchFilter filter) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("docTypes", filter.docTypes().stream().map(DocumentComplianceType::name).toList());
+        data.put("jurisdictions", List.copyOf(filter.jurisdictions()));
+        data.put("jurisdictionCodes", List.copyOf(
+                com.yizhaoqi.smartpai.model.JurisdictionNormalizer.queryCodes(filter.jurisdictions())));
+        data.put("asOf", filter.asOf().toString());
+        return data;
+    }
+
+    /**
+     * 只回传模型的原始判断，编号覆盖、状态、证据真实性由 ChatHandler 结合 QuestionPlan 校验
+     */
+    private ToolExecutionResult executeReportEvidence(Map<String, Object> arguments,
+                                                      String userId,
+                                                      Consumer<String> onChunk) {
+        Object raw = arguments.get("assessments");
+        if (!(raw instanceof List<?> list) || list.isEmpty() || list.size() > 3) {
+            throw new IllegalArgumentException("assessments 需要 1-3 个");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("assessments", raw);
+        return new ToolExecutionResult(
+                "report_evidence",
+                true,
+                "已收到 " + list.size() + " 个子问题的证据判断，代码将校验编号、状态和证据是否来自本次检索。",
+                data,
+                false);
     }
 
     private ToolExecutionResult executeGenerateSummary(Map<String, Object> arguments,
                                                        String userId,
                                                        Consumer<String> onChunk) {
+        return executeGenerateSummary(arguments, userId, onChunk, null, 1);
+    }
+
+    private ToolExecutionResult executeGenerateSummary(Map<String, Object> arguments,
+                                                       String userId,
+                                                       Consumer<String> onChunk,
+                                                       ComplianceSearchFilter inheritedFilter,
+                                                       int firstReferenceNumber) {
+        return executeGenerateSummary(arguments, userId, onChunk, inheritedFilter, firstReferenceNumber, null);
+    }
+
+    private ToolExecutionResult executeGenerateSummary(Map<String, Object> arguments,
+                                                       String userId,
+                                                       Consumer<String> onChunk,
+                                                       ComplianceSearchFilter inheritedFilter,
+                                                       int firstReferenceNumber,
+                                                       Consumer<Runnable> cancelRegistrar) {
         requireUserId(userId);
         String topic = getRequiredString(arguments, "topic");
         int maxDocs = getInt(arguments, "maxDocs", DEFAULT_TOP_K, 1, MAX_SEARCH_DOCS);
+        ComplianceSearchFilter filter = resolveSummaryFilter(arguments, inheritedFilter);
 
-        List<SearchResult> results = expandParents(hybridSearchService.searchWithPermission(topic, userId, maxDocs));
-        String summary = deepSeekClient.summarize(userId, topic, results, onChunk);
+        List<SearchResult> results = expandParents(
+                hybridSearchService.searchWithPermission(topic, userId, maxDocs, filter));
+        // 不在这里流式输出：ChatHandler 先登记 sources -> [N] 映射，再把完整摘要发出去
+        String summary = cancelRegistrar == null
+                ? deepSeekClient.summarize(userId, topic, results, null, firstReferenceNumber)
+                : deepSeekClient.summarize(userId, topic, results, null, firstReferenceNumber, cancelRegistrar);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("topic", topic);
         data.put("maxDocs", maxDocs);
         data.put("sourceCount", results.size());
         data.put("sources", results);
+        data.put("complianceFilter", complianceFilterData(filter));
+        data.put("firstReferenceNumber", firstReferenceNumber);
 
         String content = "主题：" + topic + "\n"
                 + "检索片段数：" + results.size() + "\n\n"
                 + summary;
-        return new ToolExecutionResult("generate_summary", true, content, data, onChunk != null);
+        return new ToolExecutionResult("generate_summary", true, content, data, false);
+    }
+
+    /**
+     * 摘要默认沿用最近一次检索的条件；docTypes / jurisdictions 分别覆盖，
+     * 只传一个维度时另一个维度继续继承，不能被空集合重置成“不限”。
+     */
+    private ComplianceSearchFilter resolveSummaryFilter(Map<String, Object> arguments,
+                                                         ComplianceSearchFilter inheritedFilter) {
+        boolean explicitDocTypes = hasAnyValue(arguments.get("docTypes"));
+        boolean explicitJurisdictions = hasAnyValue(arguments.get("jurisdictions"));
+        if (!explicitDocTypes && !explicitJurisdictions) {
+            return inheritedFilter == null ? ComplianceSearchFilter.current() : inheritedFilter;
+        }
+
+        LocalDate asOf = inheritedFilter == null ? LocalDate.now() : inheritedFilter.asOf();
+        List<String> docTypes = explicitDocTypes
+                ? getOptionalStringList(arguments, "docTypes")
+                : inheritedFilter == null
+                ? List.of()
+                : inheritedFilter.docTypes().stream().map(DocumentComplianceType::name).toList();
+        List<String> jurisdictions = explicitJurisdictions
+                ? getOptionalStringList(arguments, "jurisdictions")
+                : inheritedFilter == null
+                ? List.of()
+                : List.copyOf(inheritedFilter.jurisdictions());
+        return ComplianceSearchFilter.fromCodes(docTypes, jurisdictions, asOf);
+    }
+
+    private boolean hasAnyValue(Object raw) {
+        if (raw == null) {
+            return false;
+        }
+        if (raw instanceof Collection<?> collection) {
+            return collection.stream().anyMatch(item -> item != null && !String.valueOf(item).isBlank());
+        }
+        return !String.valueOf(raw).isBlank();
     }
 
     private List<SearchResult> expandParents(List<SearchResult> results) {
@@ -148,6 +368,19 @@ public class AgentToolRegistry {
                 : "rating=" + rating + "; reason=" + reason;
         stringRedisTemplate.opsForHash().put(key, field, value);
 
+        if (answerFeedbackService != null) {
+            try {
+                answerFeedbackService.record(userId,
+                        getOptionalString(arguments, "conversationId"),
+                        getOptionalString(arguments, "generationId"),
+                        rating,
+                        reason);
+            } catch (Exception e) {
+                // Redis 已经记下反馈，MySQL 失败不能让用户看到提交失败
+                logger.warn("反馈落库失败，Redis 记录已保留: userId={}, error={}", userId, e.getMessage());
+            }
+        }
+
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("key", key);
         data.put("field", field);
@@ -166,12 +399,18 @@ public class AgentToolRegistry {
             DocStats docStats = indexStats != null && indexStats.total() != null ? indexStats.total().docs() : null;
             StoreStats storeStats = indexStats != null && indexStats.total() != null ? indexStats.total().store() : null;
 
-            long documentCount = fileUploadRepository.count();
-            long fragmentCount = docStats != null ? docStats.count() : 0L;
+            long documentCount = businessDocumentRepository
+                    .countByDeletedAtIsNullAndPublicationStatus(PublicationStatus.PUBLISHED);
+            // 片段数与检索口径一致：只统计已发布文档当前 active build 的分块，空范围自然为 0
+            long fragmentCount = elasticsearchClient.count(c -> c
+                            .index(KNOWLEDGE_INDEX)
+                            .query(DocumentRetrievalFilter.build(activeRetrievalScopeService.current())))
+                    .count();
             Long deletedFragmentCount = docStats != null ? docStats.deleted() : null;
             Long storeSizeInBytes = storeStats != null ? storeStats.sizeInBytes() : null;
-            LocalDateTime latestUpdatedAt = fileUploadRepository.findFirstByOrderByMergedAtDesc()
-                    .map(this::resolveLatestUpdatedAt)
+            LocalDateTime latestUpdatedAt = businessDocumentRepository
+                    .findFirstByDeletedAtIsNullAndPublicationStatusOrderByUpdatedAtDesc(PublicationStatus.PUBLISHED)
+                    .map(document -> document.getUpdatedAt())
                     .orElse(null);
 
             Map<String, Object> data = new LinkedHashMap<>();
@@ -188,24 +427,95 @@ public class AgentToolRegistry {
         }
     }
 
+    private AgentTool planQuestionTool() {
+        return new AgentTool(
+                "plan_question",
+                "当用户问题包含两个或以上可以独立回答的部分时，先调用本工具登记子问题清单。每个子问题应能单独检索和回答；单一问题不要调用。调用后必须为每个子问题分别调用 search_knowledge，并在 subQuestionIndex 填写对应编号。",
+                objectSchema(Map.of(
+                        "subQuestions", arraySchema("可以独立检索和回答的子问题，按用户关心的顺序排列；需要 2-3 个。", 2, 3)
+                ), List.of("subQuestions"))
+        );
+    }
+
+    private AgentTool reportEvidenceTool() {
+        Map<String, Object> statusSchema = stringSchema(
+                "该子问题的证据充分性：SUPPORTED=证据足以回答；PARTIAL=证据只支撑一部分；"
+                        + "MISSING_KNOWLEDGE=已检索但资料未覆盖（要求该子问题已经检索过）；"
+                        + "MISSING_USER_CONDITION=缺少会改变结论的用户条件（未检索也可用）。");
+        statusSchema.put("enum", List.of("SUPPORTED", "PARTIAL", "MISSING_KNOWLEDGE", "MISSING_USER_CONDITION"));
+        Map<String, Object> assessmentItem = objectSchema(Map.of(
+                "index", integerSchema("子问题编号（从 1 开始），与 plan_question 的顺序一致。", 1, 3),
+                "status", statusSchema,
+                "evidence", arraySchema(
+                        "该子问题实际依据的证据，直接复制 search_knowledge 结果行里的 key=<fileMd5>#<chunkId>；"
+                                + "SUPPORTED / PARTIAL 至少 1 个，MISSING_* 可以为空。", 0, 20),
+                "reason", stringSchema("可选说明，例如缺少哪项用户条件或哪部分资料未覆盖。")
+        ), List.of("index", "status"));
+        return new AgentTool(
+                "report_evidence",
+                "为已登记的子问题记录证据充分性判断。必须在最终回答前调用，并且每个子问题恰好报告一次；"
+                        + "evidence 只能填写 search_knowledge 结果行里 key= 后面的 fileMd5#chunkId。"
+                        + "缺少用户条件用 MISSING_USER_CONDITION，检索过但缺少资料用 MISSING_KNOWLEDGE，"
+                        + "没有证据时不要声称 SUPPORTED。",
+                objectSchema(Map.of(
+                        "assessments", arraySchema(
+                                "每个已登记子问题一条判断，按子问题编号覆盖 1 到 N，不能遗漏或重复。",
+                                assessmentItem, 1, 3)
+                ), List.of("assessments"))
+        );
+    }
+
+    public static AgentTool askClarificationTool() {
+        return new AgentTool(
+                "ask_clarification",
+                "当检索后仍缺少会改变结论的用户条件（如所在地区、员工职级、适用版本、时间范围）时调用，向用户提出 1-3 个具体问题并结束本轮。不要询问资料或对话中已有的信息，不要用“请补充更多信息”这类泛泛问题，不要用澄清代替检索。",
+                objectSchema(Map.of(
+                        "questions", arraySchema("向用户提出的具体问题，每个问题说明用途；需要 1-3 个。", 1, 3)
+                ), List.of("questions"))
+        );
+    }
+
     private AgentTool searchKnowledgeTool() {
+        Map<String, Object> docTypeItem = stringSchema("文档类型枚举值。");
+        docTypeItem.put("enum", DocumentComplianceType.allowedCodes());
         return new AgentTool(
                 "search_knowledge",
-                "在知识库中搜索与用户问题相关的文档片段。当用户问题的答案可能依赖已上传资料、企业/项目/产品/系统内部信息、专有名词、事实依据、定义、功能、使用方式、实现细节、背景、流程或引用来源时应调用；即使用户没有明确说“查询知识库”，只要问题不像纯通用常识也应先检索。普通问候、闲聊、纯创作、翻译、通用代码/常识问题，或用户明确要求不要查知识库时不要调用。",
+                "在知识库中搜索与用户问题相关的文档片段。当用户问题的答案可能依赖已上传资料、企业/项目/产品/系统内部信息、专有名词、事实依据、定义、功能、使用方式、实现细节、背景、流程或引用来源时应调用；即使用户没有明确说“查询知识库”，只要问题不像纯通用常识也应先检索。普通问候、闲聊、纯创作、翻译、通用代码/常识问题，或用户明确要求不要查知识库时不要调用。"
+                        + "银行/保险合规场景下，只有当用户明确说明文档类型或适用地区时才填写 docTypes/jurisdictions；没有明确说明时留空，不要猜测地区。"
+                        + "检索只返回当前可检索版本（按生效日期、失效日期和废止标记过滤），不支持历史版本。"
+                        + "检索结果里的 issuer 只是发布机构，appliesTo 才是资料适用机构；不要用 issuer 推断适用范围。",
                 objectSchema(Map.of(
                         "query", stringSchema("用于知识库检索的查询语句。应保留用户原话中的核心实体、缩写和限定词，可包含原始问句和必要的等价改写；不要替换成固定关键词。"),
-                        "topK", integerSchema("返回的片段数量，默认 5。")
+                        "topK", integerSchema("返回的片段数量，默认 5。"),
+                        "subQuestionIndex", integerSchema("如果本轮已调用 plan_question，填写当前检索对应的子问题编号（从 1 开始）；单一问题不填。", 1, 3),
+                        "docTypes", arraySchema(
+                                "可选。用户明确要求的文档类型，只能从枚举中选择；没有明确要求时不要填写。",
+                                docTypeItem, 0, 4),
+                        "jurisdictions", arraySchema(
+                                "可选。用户明确给出的适用地区（如上海、北京）。填地方地区时检索层会自动包含全国适用资料，不要额外把全国加进来；用户问全国范围时才填全国。没有明确给出时不要填写，不要猜测。",
+                                0, 10)
                 ), List.of("query"))
         );
     }
 
     private AgentTool generateSummaryTool() {
+        Map<String, Object> docTypeItem = stringSchema(
+                "可选。摘要要沿用的文档类型；默认继承上一次 search_knowledge，只有用户明确改变类型时才填写。");
+        docTypeItem.put("enum", DocumentComplianceType.allowedCodes());
         return new AgentTool(
                 "generate_summary",
-                "对指定主题的知识库文档生成结构化摘要。适合用户要求整理、总结、归纳、提炼知识库内容时调用；本工具内部会二次调用大模型完成摘要，外层 ReAct 循环只应接收结果，不要把内部摘要过程当作新的工具计划。",
+                "对指定主题的知识库文档生成结构化摘要。适合用户要求整理、总结、归纳、提炼知识库内容时调用；"
+                        + "内部检索默认沿用上一次 search_knowledge 的地区和文档类型过滤，避免摘要混入其他范围；"
+                        + "本工具内部会二次调用大模型完成摘要，外层 ReAct 循环只应接收结果，不要把内部摘要过程当作新的工具计划。",
                 objectSchema(Map.of(
                         "topic", stringSchema("需要从知识库中整理和总结的主题。"),
-                        "maxDocs", integerSchema("用于生成摘要的最多相关片段数量，默认 5。")
+                        "maxDocs", integerSchema("用于生成摘要的最多相关片段数量，默认 5。"),
+                        "docTypes", arraySchema(
+                                "可选。摘要要沿用的文档类型；不填则继承上一次 search_knowledge 的条件。",
+                                docTypeItem, 0, 4),
+                        "jurisdictions", arraySchema(
+                                "可选。摘要要沿用的适用地区；不填则继承上一次 search_knowledge 的条件。",
+                                0, 10)
                 ), List.of("topic"))
         );
     }
@@ -231,7 +541,7 @@ public class AgentToolRegistry {
         );
     }
 
-    private Map<String, Object> objectSchema(Map<String, Object> properties, List<String> required) {
+    private static Map<String, Object> objectSchema(Map<String, Object> properties, List<String> required) {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "object");
         schema.put("properties", properties);
@@ -251,6 +561,28 @@ public class AgentToolRegistry {
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("type", "integer");
         schema.put("description", description);
+        return schema;
+    }
+
+    private Map<String, Object> integerSchema(String description, int min, int max) {
+        Map<String, Object> schema = integerSchema(description);
+        schema.put("minimum", min);
+        schema.put("maximum", max);
+        return schema;
+    }
+
+    private static Map<String, Object> arraySchema(String description, int minItems, int maxItems) {
+        return arraySchema(description, Map.of("type", "string"), minItems, maxItems);
+    }
+
+    private static Map<String, Object> arraySchema(String description, Map<String, Object> itemSchema,
+                                                   int minItems, int maxItems) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("type", "array");
+        schema.put("items", itemSchema);
+        schema.put("description", description);
+        schema.put("minItems", minItems);
+        schema.put("maxItems", maxItems);
         return schema;
     }
 
@@ -284,8 +616,45 @@ public class AgentToolRegistry {
             }
             output.append("(fileMd5=").append(result.getFileMd5())
                     .append(", chunkId=").append(result.getChunkId());
+            // report_evidence 的证据要求是 fileMd5#chunkId：直接给出可复制的 key，避免模型自己拼分隔符被拒
+            if (result.getFileMd5() != null && !result.getFileMd5().isBlank() && result.getChunkId() != null) {
+                output.append(", key=").append(result.getFileMd5()).append('#').append(result.getChunkId());
+            }
             if (result.getPageNumber() != null) {
                 output.append(", page=").append(result.getPageNumber());
+            }
+            // 合规元数据供模型判断类型、适用地区和效力；旧资料没有标注时省略
+            boolean complianceDoc = result.getDocType() != null && !result.getDocType().isBlank();
+            if (complianceDoc) {
+                output.append(", docType=").append(result.getDocType());
+            }
+            if (result.getJurisdiction() != null && !result.getJurisdiction().isBlank()) {
+                output.append(", jurisdiction=").append(result.getJurisdiction());
+            }
+            if (result.getIssuer() != null && !result.getIssuer().isBlank()) {
+                output.append(", issuer=").append(result.getIssuer());
+            }
+            if (result.getApplicableInstitutions() != null && !result.getApplicableInstitutions().isBlank()) {
+                output.append(", appliesTo=").append(result.getApplicableInstitutions());
+            }
+            if (result.getEffectiveAt() != null && !result.getEffectiveAt().isBlank()) {
+                output.append(", effectiveAt=").append(result.getEffectiveAt());
+            }
+            if (result.getExpiresAt() != null && !result.getExpiresAt().isBlank()) {
+                output.append(", expiresAt=").append(result.getExpiresAt());
+            }
+            if (complianceDoc && result.getValidityStatus() != null && !result.getValidityStatus().isBlank()) {
+                output.append(", validity=").append(result.getValidityStatus());
+                if (result.getValidityLabel() != null && !result.getValidityLabel().isBlank()) {
+                    output.append('(').append(result.getValidityLabel()).append(')');
+                }
+            }
+            // 条款级切分结果供模型在回答中引用具体条款；历史/非合规资料没有条款信息时省略
+            if (result.getArticlePath() != null && !result.getArticlePath().isBlank()) {
+                output.append(", article=").append(result.getArticlePath());
+            }
+            if (result.getClauseNo() != null && !result.getClauseNo().isBlank()) {
+                output.append(", clause=").append(result.getClauseNo());
             }
             if (result.getScore() != null) {
                 output.append(", score=").append(String.format(Locale.ROOT, "%.4f", result.getScore()));
@@ -312,19 +681,12 @@ public class AgentToolRegistry {
     }
 
     private String formatKnowledgeStats(Map<String, Object> data) {
-        return "知识库统计："
-                + "\n- MySQL 文档总数：" + data.get("documentCount")
-                + "\n- Elasticsearch 片段总数：" + data.get("fragmentCount")
-                + "\n- ES 已删除片段数：" + nullToDash(data.get("deletedFragmentCount"))
-                + "\n- ES 存储大小(bytes)：" + nullToDash(data.get("storeSizeInBytes"))
+        return "知识库统计（共享库已发布范围，不按具体查询地区/日期过滤）："
+                + "\n- 已发布文档数：" + data.get("documentCount")
+                + "\n- 可检索片段数：" + data.get("fragmentCount")
+                + "\n- ES 已删除片段数（全索引）：" + nullToDash(data.get("deletedFragmentCount"))
+                + "\n- ES 存储大小(bytes，全索引)：" + nullToDash(data.get("storeSizeInBytes"))
                 + "\n- 最近更新时间：" + nullToDash(data.get("latestUpdatedAt"));
-    }
-
-    private LocalDateTime resolveLatestUpdatedAt(FileUpload fileUpload) {
-        if (fileUpload.getMergedAt() != null) {
-            return fileUpload.getMergedAt();
-        }
-        return fileUpload.getCreatedAt();
     }
 
     private String getRequiredString(Map<String, Object> arguments, String name) {
@@ -341,6 +703,31 @@ public class AgentToolRegistry {
             return null;
         }
         return String.valueOf(value).trim();
+    }
+
+    /**
+     * 可选字符串数组参数：null 返回空列表，数组里的 null/空白项忽略；模型偶尔传单个字符串时也按一项处理
+     */
+    private List<String> getOptionalStringList(Map<String, Object> arguments, String name) {
+        Object raw = arguments.get(name);
+        if (raw == null) {
+            return List.of();
+        }
+        if (!(raw instanceof List<?> list)) {
+            String single = String.valueOf(raw).trim();
+            return single.isEmpty() ? List.of() : List.of(single);
+        }
+        List<String> values = new ArrayList<>(list.size());
+        for (Object item : list) {
+            if (item == null) {
+                continue;
+            }
+            String value = String.valueOf(item).trim();
+            if (!value.isEmpty()) {
+                values.add(value);
+            }
+        }
+        return values;
     }
 
     private int getInt(Map<String, Object> arguments, String name, int defaultValue, int min, int max) {

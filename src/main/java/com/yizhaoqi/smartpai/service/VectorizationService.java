@@ -2,6 +2,8 @@ package com.yizhaoqi.smartpai.service;
 
 import com.yizhaoqi.smartpai.client.EmbeddingClient;
 import com.yizhaoqi.smartpai.entity.EsDocument;
+import com.yizhaoqi.smartpai.model.ComplianceMetadata;
+import com.yizhaoqi.smartpai.model.DocumentBuildContext;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.model.FileUpload;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
@@ -77,9 +79,19 @@ public class VectorizationService {
      */
     public VectorizationUsageResult vectorizeWithUsage(String fileMd5, String userId, String orgTag, boolean isPublic,
                                                        String requesterId, Runnable onBatchIndexed) {
+        return vectorizeWithUsage(fileMd5, userId, orgTag, isPublic, requesterId, null, onBatchIndexed);
+    }
+
+    /**
+     * 版本化入库：按 build 读取分块、按 buildId_chunkId 写 ES，并带上文档/版本/构建字段；
+     * context 为 null 时保持旧路径（按 fileMd5 读分块、fileMd5_chunkId 作为文档 ID）
+     */
+    public VectorizationUsageResult vectorizeWithUsage(String fileMd5, String userId, String orgTag, boolean isPublic,
+                                                       String requesterId, DocumentBuildContext buildContext,
+                                                       Runnable onBatchIndexed) {
         try {
-            logger.info("开始向量化文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
-                       fileMd5, userId, orgTag, isPublic);
+            logger.info("开始向量化文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}, buildId: {}",
+                       fileMd5, userId, orgTag, isPublic, buildContext == null ? null : buildContext.buildId());
 
             // 整份文件固定使用同一个模型，避免处理中途切换激活模型导致同一文件混用两套向量
             ModelProviderConfigService.ActiveProviderView provider =
@@ -87,16 +99,19 @@ public class VectorizationService {
             String modelVersion = EmbeddingClient.modelVersionOf(provider);
             boolean contextual = prepareChunkContexts(fileMd5);
             String fileName = resolveFileName(fileMd5, userId);
+            String buildId = buildContext == null ? null : buildContext.buildId();
 
             int totalTokens = 0;
             int totalChunks = 0;
             Pageable page = PageRequest.of(0, Math.max(batchSize, 1));
             while (true) {
-                Slice<DocumentVector> slice = documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5, page);
+                Slice<DocumentVector> slice = buildId == null
+                        ? documentVectorRepository.findByFileMd5OrderByChunkIdAsc(fileMd5, page)
+                        : documentVectorRepository.findByBuildIdOrderByChunkIdAsc(buildId, page);
                 List<DocumentVector> chunks = slice.getContent();
                 if (!chunks.isEmpty()) {
-                    totalTokens += embedAndIndexBatch(fileMd5, fileName, chunks, userId, orgTag, isPublic, requesterId, provider,
-                            modelVersion, contextual);
+                    totalTokens += embedAndIndexBatch(fileMd5, fileName, chunks, userId, orgTag, isPublic, requesterId,
+                            buildContext, provider, modelVersion, contextual);
                     totalChunks += chunks.size();
                     onBatchIndexed.run();
                 }
@@ -162,6 +177,7 @@ public class VectorizationService {
                                    String orgTag,
                                    boolean isPublic,
                                    String requesterId,
+                                   DocumentBuildContext buildContext,
                                    ModelProviderConfigService.ActiveProviderView provider,
                                    String modelVersion,
                                    boolean contextual) {
@@ -178,10 +194,13 @@ public class VectorizationService {
         }
 
         List<EsDocument> esDocuments = new ArrayList<>(chunks.size());
+        String documentIdPrefix = buildContext == null || buildContext.buildId() == null
+                ? fileMd5
+                : buildContext.buildId();
         for (int i = 0; i < chunks.size(); i++) {
             DocumentVector chunk = chunks.get(i);
-            esDocuments.add(new EsDocument(
-                    fileMd5 + "_" + chunk.getChunkId(),
+            EsDocument document = new EsDocument(
+                    documentIdPrefix + "_" + chunk.getChunkId(),
                     fileMd5,
                     chunk.getChunkId(),
                     chunk.getTextContent(),
@@ -193,7 +212,29 @@ public class VectorizationService {
                     userId,
                     orgTag,
                     isPublic
-            ));
+            );
+            // 条款元数据来自解析阶段，非合规文档为空；ES mapping 为 keyword，供引用展示与后续过滤
+            document.setArticlePath(chunk.getArticlePath());
+            document.setClauseNo(chunk.getClauseNo());
+            if (buildContext != null) {
+                document.setDocumentId(buildContext.documentId());
+                document.setVersionId(buildContext.versionId());
+                document.setBuildId(buildContext.buildId());
+                document.setVersionNo(buildContext.versionNo());
+                document.setBuildNo(buildContext.buildNo());
+                ComplianceMetadata compliance = buildContext.compliance();
+                if (compliance != null) {
+                    document.setDocType(compliance.docType());
+                    document.setJurisdiction(compliance.jurisdiction());
+                    document.setJurisdictionCode(compliance.jurisdictionCode());
+                    document.setIssuer(compliance.issuer());
+                    document.setApplicableInstitutions(compliance.applicableInstitutions());
+                    document.setEffectiveAt(compliance.wireEffectiveAt());
+                    document.setExpiresAt(compliance.wireExpiresAt());
+                    document.setRepealed(compliance.repealed());
+                }
+            }
+            esDocuments.add(document);
         }
         esDocuments.forEach(doc -> doc.setFileName(fileName));
         elasticsearchService.bulkIndex(esDocuments);

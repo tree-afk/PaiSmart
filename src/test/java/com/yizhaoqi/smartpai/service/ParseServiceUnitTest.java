@@ -214,7 +214,7 @@ class ParseServiceUnitTest {
         assertTrue(command.contains("--format"));
         assertTrue(command.contains("json"));
         assertTrue(command.contains("--output"));
-        assertTrue(command.contains("/tmp/output.json"));
+        assertTrue(command.contains(Path.of("/tmp/output.json").toString()));
         assertTrue(command.contains("--ocr-language"));
         assertTrue(command.contains("chi_sim+eng"));
         assertFalse(command.contains("--ocr-server-url"));
@@ -373,6 +373,103 @@ class ParseServiceUnitTest {
         Method method = ParseService.class.getDeclaredMethod("splitTextIntoChunksWithSemantics", String.class, int.class);
         method.setAccessible(true);
         return (List<String>) method.invoke(parseService, text, chunkSize);
+    }
+
+    @Test
+    void testSplitIntoChunks_MergesAdjacentShortClausesIntoOneChunk() throws Exception {
+        ReflectionTestUtils.setField(parseService, "chunkSize", 512);
+        ReflectionTestUtils.setField(parseService, "overlapSize", 100);
+        ReflectionTestUtils.setField(parseService, "minChunkSize", 100);
+
+        String text = """
+                > DEMO 合成资料：本文为评测用虚构内部制度，机构、文号、数值均为演示值。
+
+                # 演示银行重庆分行互联网贷款合作机构管理细则（内部制度）
+
+                演示渝银分发〔2026〕9号
+
+                第一条 为规范本行互联网贷款业务合作机构管理，防范合作机构风险，依据《通知》等规定，制定本细则。
+                第二条 本细则适用于演示银行重庆分行及辖属机构与外部合作机构联合发放互联网贷款的业务管理。
+                第三条 合作机构应当具备相应的经营资质、风控能力和信息系统条件，由分行合作机构管理委员会准入并每年复核。
+                第四条 本行与合作机构共同出资发放互联网贷款的，单笔贷款中合作方出资比例不得低于20%。
+                """;
+
+        List<Object> chunks = splitIntoChunks(text);
+
+        assertEquals(2, chunks.size());
+        assertTrue(textOf(chunks.get(0)).contains("DEMO"));
+        assertTrue(textOf(chunks.get(1)).contains("第一条"));
+        assertTrue(textOf(chunks.get(1)).contains("第四条"));
+        assertEquals("第一条至第四条", clauseNoOf(chunks.get(1)));
+        assertNull(articlePathOf(chunks.get(1)));
+    }
+
+    @Test
+    void testSplitIntoChunks_DoesNotMergeAcrossChapters() throws Exception {
+        ReflectionTestUtils.setField(parseService, "chunkSize", 512);
+        ReflectionTestUtils.setField(parseService, "overlapSize", 100);
+        ReflectionTestUtils.setField(parseService, "minChunkSize", 100);
+
+        String text = """
+                第一章 总则
+
+                第一条 本细则适用于本行互联网贷款业务。
+
+                第二章 风险管理
+
+                第二条 本行应当独立开展身份验证和授信审批。
+                """;
+
+        List<Object> chunks = splitIntoChunks(text);
+
+        assertEquals(2, chunks.size());
+        assertTrue(textOf(chunks.get(0)).contains("第一章 总则"));
+        assertTrue(textOf(chunks.get(1)).contains("第二章 风险管理"));
+        assertEquals("第一章 总则 > 第一条", articlePathOf(chunks.get(0)));
+        assertEquals("第二章 风险管理 > 第二条", articlePathOf(chunks.get(1)));
+    }
+
+    @Test
+    void testSplitIntoChunks_KeepsLongClauseSplitWithClauseNo() throws Exception {
+        ReflectionTestUtils.setField(parseService, "chunkSize", 512);
+        ReflectionTestUtils.setField(parseService, "overlapSize", 100);
+        ReflectionTestUtils.setField(parseService, "minChunkSize", 100);
+
+        String text = "第一条 银行应当建立合作机构管理制度。".repeat(40);
+
+        List<Object> chunks = splitIntoChunks(text);
+
+        assertTrue(chunks.size() > 1);
+        for (Object chunk : chunks) {
+            assertEquals("第一条", clauseNoOf(chunk));
+            assertTrue(textOf(chunk).length() <= 612);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Object> splitIntoChunks(String text) throws Exception {
+        Method method = ParseService.class.getDeclaredMethod("splitIntoChunks", String.class, boolean.class,
+                com.yizhaoqi.smartpai.service.chunk.ComplianceClauseChunker.Session.class);
+        method.setAccessible(true);
+        return (List<Object>) method.invoke(parseService, text, true, null);
+    }
+
+    private String textOf(Object chunk) throws Exception {
+        return chunkComponent(chunk, "text");
+    }
+
+    private String articlePathOf(Object chunk) throws Exception {
+        return chunkComponent(chunk, "articlePath");
+    }
+
+    private String clauseNoOf(Object chunk) throws Exception {
+        return chunkComponent(chunk, "clauseNo");
+    }
+
+    private String chunkComponent(Object chunk, String name) throws Exception {
+        Method method = chunk.getClass().getDeclaredMethod(name);
+        method.setAccessible(true);
+        return (String) method.invoke(chunk);
     }
 
     private String normalizeLiteParseText(String text) throws Exception {

@@ -14,6 +14,8 @@ import java.util.stream.Collectors;
  * - Recall@K（本项目口径）：前 K 条结果里只要出现任一相关分块即记为命中，数据集上取命中率；
  * - 倒数排名 RR：第一条相关分块排在第 r 位时为 1/r，前 K 条都没有时为 0，数据集上取平均即 MRR；
  * - 期望文档覆盖率：前 K 条覆盖了多少比例的期望文档（一道题需要多篇文档时参考）。
+ * - 证据覆盖率：期望证据短语里有多少条真的出现在交给模型的片段中（逐条计数，不是"任意一条"）；
+ *   候选池口径另算一份，用来区分"没召回"和"召回了但没进 topK"。
  * 期望文档优先按 MD5 匹配，其次按文件名（忽略大小写）匹配。
  * 用例标注了 expectedEvidence 时，相关分块还要求分块文本包含其中任意一个短语（分块级）；
  * 否则同一文件的任何分块都算相关（文件级）。文件级命中另外单独记录，用来对比两种口径的差距。
@@ -114,6 +116,48 @@ public final class RetrievalMetrics {
     public static boolean isRelevant(SearchResult result, EvalCase evalCase) {
         return isDocRelevant(result, lower(evalCase.expectedFileMd5s()), lower(evalCase.expectedFileNames()))
                 && containsEvidence(result, normalizedEvidence(evalCase));
+    }
+
+    /**
+     * 期望证据短语被前 K 条结果覆盖的比例：每条短语只要在任意一条结果的小段文字里逐字出现即算覆盖。
+     * 与 {@link #isRelevant} 的区别是不要求命中块来自期望文件，只回答"这句话有没有被交给模型"；
+     * 文档覆盖仍由 {@link #expectedDocCoverage} 单独统计。用例没有标注证据时返回 null。
+     */
+    public static Double evidenceCoverage(List<SearchResult> results, EvalCase evalCase, int k) {
+        List<String> evidence = normalizedEvidence(evalCase);
+        if (evidence.isEmpty()) {
+            return null;
+        }
+        int limit = limit(results, k);
+        long covered = evidence.stream().filter(phrase -> containsPhrase(results, phrase, limit)).count();
+        return (double) covered / evidence.size();
+    }
+
+    /**
+     * 重排前候选池里的证据覆盖率，用来看"证据已经召回、但没进最终 topK"的情况
+     */
+    public static Double candidateEvidenceCoverage(List<SearchResult> candidates, EvalCase evalCase) {
+        if (candidates == null || candidates.isEmpty()) {
+            return evidenceCoverage(List.of(), evalCase, 0);
+        }
+        return evidenceCoverage(candidates, evalCase, candidates.size());
+    }
+
+    private static boolean containsPhrase(List<SearchResult> results, String phrase, int limit) {
+        for (int i = 0; i < limit; i++) {
+            if (visibleText(results.get(i)).contains(phrase)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 模型真正看到的文字：父块扩展后是父块（包含命中分块），否则是命中分块本身
+     */
+    private static String visibleText(SearchResult result) {
+        String parent = result.getParentContext();
+        return normalizeText(parent == null || parent.isBlank() ? result.getTextContent() : parent);
     }
 
     static boolean isDocRelevant(SearchResult result, Set<String> expectedMd5s, Set<String> expectedNames) {

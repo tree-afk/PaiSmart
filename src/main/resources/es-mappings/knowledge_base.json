@@ -1,6 +1,45 @@
 {
   "mappings": {
     "properties": {
+      "documentId": {
+        "type": "keyword"
+      },
+      "versionId": {
+        "type": "keyword"
+      },
+      "buildId": {
+        "type": "keyword"
+      },
+      "versionNo": {
+        "type": "integer"
+      },
+      "buildNo": {
+        "type": "integer"
+      },
+      "docType": {
+        "type": "keyword"
+      },
+      "jurisdiction": {
+        "type": "keyword"
+      },
+      "jurisdictionCode": {
+        "type": "keyword"
+      },
+      "issuer": {
+        "type": "keyword"
+      },
+      "applicableInstitutions": {
+        "type": "keyword"
+      },
+      "effectiveAt": {
+        "type": "date"
+      },
+      "expiresAt": {
+        "type": "date"
+      },
+      "repealed": {
+        "type": "boolean"
+      },
       "fileMd5": {
         "type": "keyword"
       },
@@ -13,6 +52,12 @@
       "anchorText": {
         "type": "text",
         "index": false
+      },
+      "articlePath": {
+        "type": "keyword"
+      },
+      "clauseNo": {
+        "type": "keyword"
       },
       "fileName": {
         "type": "text",
@@ -44,7 +89,7 @@
       "orgTag": {
         "type": "keyword"
       },
-      "isPublic": {
+      "public": {
         "type": "boolean"
       }
     }

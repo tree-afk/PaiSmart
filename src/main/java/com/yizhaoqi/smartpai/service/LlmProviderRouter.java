@@ -123,8 +123,15 @@ public class LlmProviderRouter {
      * 配合 {@link #completeReActTurn} 且不传工具，即为非流式的"检索后直接回答"调用（离线评测使用）。
      */
     public List<Map<String, Object>> buildRagMessages(String userMessage, String context) {
+        return buildRagMessages(userMessage, context, null);
+    }
+
+    /**
+     * @param extraSystemRule 追加到 system 提示词规则后面的用例级规则（离线评测的澄清类用例使用）
+     */
+    public List<Map<String, Object>> buildRagMessages(String userMessage, String context, String extraSystemRule) {
         List<Map<String, Object>> messages = new ArrayList<>();
-        for (Map<String, String> message : buildMessages(userMessage, context, List.of())) {
+        for (Map<String, String> message : buildMessages(userMessage, context, List.of(), extraSystemRule)) {
             messages.add(new LinkedHashMap<>(message));
         }
         return messages;
@@ -147,11 +154,11 @@ public class LlmProviderRouter {
         if (promptCfg.getRules() != null) {
             sysBuilder.append(promptCfg.getRules()).append("\n\n");
         }
-        sysBuilder.append("本系统是「知识库优先」的问答助手：你的首要职责是基于本系统已收录的资料回答用户。除非命中下方明确的白名单，否则**每一个用户问题都必须先调用 search_knowledge**，再基于检索结果作答。\n\n")
+        sysBuilder.append("本系统是「知识库优先」的问答助手：你的首要职责是基于本系统已收录的资料回答用户。除非命中下方明确的白名单，否则单一问题必须先调用 search_knowledge，再基于检索结果作答；复合问题必须先调用 plan_question 制定子问题计划，再逐项调用 search_knowledge。\n\n")
                 .append("强制检索原则（默认行为）：\n")
                 .append("1. 默认调用 search_knowledge：只要问题涉及任何实体、名称、缩写、产品、项目、术语、流程、功能、实现、背景、对比、引用，或包含「这/它/该/上述/这个/那个」等上下文指代，无论你是否自认为已知答案，都必须先检索，不要等用户说「查知识库」。\n")
                 .append("2. 构造 query 时严格保留用户原话中的核心名词、缩写和限定词，禁止替换为泛化关键词；必要时可在同一次 query 中合并原句与等价改写。\n")
-                .append("3. 用户要求整理、总结、归纳、提炼知识库内容时，先用 search_knowledge 圈定材料，再调用 generate_summary 生成总结。\n\n")
+                .append("3. 用户要求整理、总结、归纳、提炼知识库内容时，先用 search_knowledge 圈定材料，再调用 generate_summary 生成总结。generate_summary 必须沿用同一次检索的地区/文档类型条件；如果用户中途改变了范围，显式传入 docTypes/jurisdictions，不要用默认全库范围重查。\n\n")
                 .append("可以跳过 search_knowledge 的白名单（必须严格匹配其一，否则一律检索）：\n")
                 .append("- 纯打招呼或寒暄（你好/谢谢/再见等）；\n")
                 .append("- 纯翻译请求（把 X 翻译为 Y），且不涉及本系统术语；\n")
@@ -161,9 +168,34 @@ public class LlmProviderRouter {
                 .append("回答与异常处理：\n")
                 .append("- 只要 search_knowledge 返回了片段，必须基于片段作答并按来源编号标注，禁止回答「知识库暂无相关信息」。\n")
                 .append("- 片段只覆盖了问题的一部分时，只回答片段能支撑的内容；片段没有覆盖的部分明确告诉用户「资料中没有相关说明」，不要为缺乏依据的句子硬凑来源编号。\n")
-                .append("- 只有工具明确返回零片段时，才说明暂无相关材料并提示用户补充线索。\n")
+                .append("- 只有所有检索都返回零片段时，才说明暂无相关材料；部分子问题没有证据时，只回答有证据的部分，并明确说明其余部分资料未覆盖。\n")
                 .append("- 工具失败时根据错误信息决定下一步（重试 / 换 query / 继续推理），不要直接中断。\n")
                 .append("- 如需记录反馈或查看知识库统计，通过 tool_calls 调用对应工具。\n")
+                .append("合规问答（银行/保险）：\n")
+                .append("- 文档类型（REGULATION/INTERNAL_POLICY/PRODUCT_TERMS/GUIDELINE）只用于组织来源、提示资料性质，不是效力等级。禁止仅凭“监管规定 > 内部制度 > 产品条款 > 操作指引”直接判定冲突时以谁为准；监管规定也可能不适用于某类机构或地区。除非用户明确要求只看监管规定，否则不要只检索监管规定，还应覆盖内部制度和产品条款。\n")
+                .append("- 资料冲突时，分别列出每份资料的发布机构、适用地区/适用机构、生效/失效/废止状态、具体条款和差异；先比较这些适用范围与条款内容，再决定能否合并结论。无法确认适用关系时保留“待核实/需法务确认”，不要给出确定结论。\n")
+                .append("- issuer 只表示“谁发布”，appliesTo（适用机构/主体）才表示“适用于谁”；不得用发布机构反推资料适用于哪些机构。用户问某机构是否适用时，以 appliesTo 和条款原文为依据，缺少信息就说明缺少适用机构信息。\n")
+                .append("- 地区检索层会把地方问题扩展为“地方 + 全国适用”，回答时要区分全国适用条款和地方补充条款；不要因为资料标注“全国”就把它当成只适用于中央机构，也不要遗漏全国资料。\n")
+                .append("- 效力状态以检索结果里的 validity 字段为准：UNCONFIRMED 必须说明“生效日期未标注，效力待确认”，不得说成现行有效；EFFECTIVE 只能表述为“标注生效日期已到且未标注失效”，不得直接断言现行有效；PENDING/EXPIRED/REPEALED 不能作为现行依据（检索层通常已排除）。\n")
+                .append("- 用户明确给出地区/机构/文档类型时，search_knowledge 必须填写 jurisdictions/docTypes（地区写入 jurisdictions，文档类型按枚举写入 docTypes），取值保留用户原话；不要自行猜测地区，没有明确说明时留空，不要猜测地区或机构。地区、机构或生效版本不明确且会改变结论时，先调用 ask_clarification，不要直接给结论。\n")
+                .append("- 只支持当前可检索版本（检索层已按生效日期、失效日期和废止标记过滤）；用户询问历史版本、旧政策或未来版本时，明确说明「当前只支持现行可检索版本」，不要用旧资料冒充现行版本。\n")
+                .append("- 回答必须引用到文件 + articlePath/clauseNo（检索结果带 article=/clause= 元数据时）；没有条款依据时拒答或只给部分回答，并说明缺失的是资料还是用户条件（复用 report_evidence 的 MISSING_KNOWLEDGE / MISSING_USER_CONDITION 语义）。\n")
+                .append("- 只回答「制度/条款/流程/适用条件」类问题；不做客户级授信、核保、理赔裁定，也不输出法律意见。需要客户、保单、工单等业务数据时，说明当前资料不足，不要编造事实或结论。\n")
+                .append("- 保持既有约束：复合问题先调用 plan_question、逐项调用 search_knowledge，并在最终回答前调用 report_evidence；证据必须来自本次真实检索并去重，不得编造 fileMd5#chunkId。\n")
+                .append("复合问题与证据充分性：\n")
+                .append("- 如果用户问题包含两个及以上可以独立回答的部分，先调用 plan_question 登记 2-3 个子问题；不要把多个子问题塞进一次检索。\n")
+                .append("- 制定计划后，必须为每个子问题分别调用 search_knowledge，并在 subQuestionIndex 填写对应编号。\n")
+                .append("- 每个子问题检索完成后、给出最终回答前，必须调用 report_evidence，为每个子问题恰好报告一次证据充分性判断；不能遗漏、重复或报告计划外的编号。\n")
+                .append("- report_evidence 的 status 只能是 SUPPORTED / PARTIAL / MISSING_KNOWLEDGE / MISSING_USER_CONDITION；"
+                        + "evidence 必须填写 search_knowledge 结果里真实出现的 fileMd5#chunkId，不得编造。SUPPORTED / PARTIAL 至少提供 1 条真实证据，MISSING_* 的证据可以为空。\n")
+                .append("- 缺少会改变结论的用户条件（所在地区、员工职级、适用版本、时间范围等）时用 MISSING_USER_CONDITION；如果缺少这些条件就无法给出结论，优先调用 ask_clarification 向用户提问。缺少资料时用 MISSING_KNOWLEDGE。\n")
+                .append("- 不得在没有证据时声称 SUPPORTED；证据只支撑一部分时用 PARTIAL，并在最终回答中说明未覆盖的部分。\n")
+                .append("- 单一问题不要调用 plan_question。\n")
+                .append("- 没有检索到片段或没有检索的子问题，必须在最终回答中明确说明「这部分资料未覆盖」，不得说成已解决，也不得硬凑来源编号。\n")
+                .append("澄清：\n")
+                .append("- 检索后如果仍缺少会改变结论的用户条件（如所在地区、员工职级、适用版本、时间范围），调用 ask_clarification 提出 1-3 个具体问题，并在问题里说明用途。\n")
+                .append("- 不要询问资料或对话里已有的信息；不要用「请补充更多信息」这类泛泛问题；不要用澄清代替检索。\n")
+                .append("- 调用 ask_clarification 后本轮结束，等待用户回答；不要在同一轮继续输出答案。\n")
                 .append("拿到 tool 结果后继续推理并给出最终回答。\n\n");
         if (feedbackGuidance != null && !feedbackGuidance.isBlank()) {
             sysBuilder.append(feedbackGuidance.trim()).append("\n\n");
@@ -270,7 +302,7 @@ public class LlmProviderRouter {
                             chunk -> processReActStreamChunk(chunk, accumulator, onChunk),
                             error -> {
                                 logProviderError("ReAct 流式回合调用失败", error);
-                                settleReActStreamUsage(accumulator);
+                                settleFailedReActStreamUsage(accumulator);
                                 onError.accept(error);
                             },
                             () -> {
@@ -413,7 +445,7 @@ public class LlmProviderRouter {
                                              List<Map<String, String>> history) {
         Map<String, Object> request = new java.util.HashMap<>();
         request.put("model", model);
-        request.put("messages", buildMessages(userMessage, context, history));
+        request.put("messages", buildMessages(userMessage, context, history, null));
         request.put("stream", true);
         request.put("stream_options", Map.of("include_usage", true));
 
@@ -432,13 +464,17 @@ public class LlmProviderRouter {
 
     private List<Map<String, String>> buildMessages(String userMessage,
                                                     String context,
-                                                    List<Map<String, String>> history) {
+                                                    List<Map<String, String>> history,
+                                                    String extraSystemRule) {
         List<Map<String, String>> messages = new ArrayList<>();
         AiProperties.Prompt promptCfg = aiProperties.getPrompt();
 
         StringBuilder sysBuilder = new StringBuilder();
         if (promptCfg.getRules() != null) {
             sysBuilder.append(promptCfg.getRules()).append("\n\n");
+        }
+        if (extraSystemRule != null && !extraSystemRule.isBlank()) {
+            sysBuilder.append(extraSystemRule).append("\n\n");
         }
 
         String refStart = promptCfg.getRefStart() != null ? promptCfg.getRefStart() : "<<REF>>";
@@ -721,6 +757,27 @@ public class LlmProviderRouter {
                 : usageQuotaService.estimateTextTokens(usageTracker.responseContent.toString());
 
         usageQuotaService.settleReservation(usageTracker.reservation, actualPromptTokens + actualCompletionTokens);
+    }
+
+    /**
+     * 上游在返回任何内容和用量之前就失败（如 4xx 拒绝）时，本次调用没有消耗 token：
+     * 按 0 结算，余额模式不扣费、额度模式退回预留。已经收到部分数据仍按实际/估算结算。
+     */
+    private void settleFailedReActStreamUsage(ReActStreamAccumulator accumulator) {
+        if (accumulator == null || accumulator.settled) {
+            return;
+        }
+        boolean receivedData = accumulator.promptTokens > 0
+                || accumulator.completionTokens > 0
+                || accumulator.content.length() > 0
+                || accumulator.reasoningContent.length() > 0
+                || !accumulator.toolCalls.isEmpty();
+        if (receivedData) {
+            settleReActStreamUsage(accumulator);
+            return;
+        }
+        accumulator.settled = true;
+        usageQuotaService.settleReservation(accumulator.reservation, 0);
     }
 
     private void settleReActStreamUsage(ReActStreamAccumulator accumulator) {

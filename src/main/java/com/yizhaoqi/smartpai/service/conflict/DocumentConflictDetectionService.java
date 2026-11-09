@@ -51,19 +51,19 @@ public class DocumentConflictDetectionService {
             return;
         }
         try {
-            executor.execute(() -> scanQuietly(event.fileMd5()));
+            executor.execute(() -> scanQuietly(event.fileMd5(), event.documentId()));
         } catch (Exception e) {
             logger.warn("冲突检测任务提交失败，跳过: fileMd5={}, error={}", event.fileMd5(), e.getMessage());
         }
     }
 
-    void scanQuietly(String fileMd5) {
+    void scanQuietly(String fileMd5, String documentId) {
         if (!scanning.add(fileMd5)) {
             logger.info("文件正在做冲突检测，跳过重复触发: fileMd5={}", fileMd5);
             return;
         }
         try {
-            scan(fileMd5);
+            scan(fileMd5, documentId);
         } catch (Exception e) {
             logger.warn("冲突检测失败，不影响文件入库: fileMd5={}", fileMd5, e);
         } finally {
@@ -72,8 +72,12 @@ public class DocumentConflictDetectionService {
     }
 
     public List<DocumentConflict> scan(String fileMd5) throws Exception {
+        return scan(fileMd5, null);
+    }
+
+    public List<DocumentConflict> scan(String fileMd5, String documentId) throws Exception {
         long start = System.currentTimeMillis();
-        List<ConflictCandidate> candidates = candidateFinder.findCandidates(fileMd5);
+        List<ConflictCandidate> candidates = candidateFinder.findCandidates(fileMd5, documentId);
         if (candidates.isEmpty()) {
             return List.of();
         }

@@ -36,7 +36,11 @@ public record EvalCaseResult(
         String error,
         long latencyMs,
         /* 分阶段检索指标，旧报告没有这一项 */
-        Stages stages
+        Stages stages,
+        /* 检索/生成/评委分阶段耗时，旧报告没有这一项 */
+        Timings timings,
+        /* 引用可溯源率与相关率，旧报告没有这一项 */
+        CitationMetrics citation
 ) {
 
     public EvalCaseResult(String caseId, String question, String referenceAnswer, List<String> expectedFileMd5s,
@@ -47,7 +51,23 @@ public record EvalCaseResult(
                           boolean needsHumanReview, String reviewReason, String error, long latencyMs) {
         this(caseId, question, referenceAnswer, expectedFileMd5s, expectedFileNames, expectedEvidence, retrievalMode,
                 retrieved, retrievalHit, docHit, firstRelevantRank, reciprocalRank, expectedDocCoverage, answer, judgeScore,
-                judgeCorrect, judgeReason, judgeRawOutput, diagnosis, needsHumanReview, reviewReason, error, latencyMs, null);
+                judgeCorrect, judgeReason, judgeRawOutput, diagnosis, needsHumanReview, reviewReason, error, latencyMs,
+                null, null, null);
+    }
+
+    /**
+     * 兼容只带分阶段指标、没有耗时和引用指标的旧调用
+     */
+    public EvalCaseResult(String caseId, String question, String referenceAnswer, List<String> expectedFileMd5s,
+                          List<String> expectedFileNames, List<String> expectedEvidence, String retrievalMode,
+                          List<RetrievedChunk> retrieved, Boolean retrievalHit, Boolean docHit, Integer firstRelevantRank,
+                          Double reciprocalRank, Double expectedDocCoverage, String answer, Integer judgeScore,
+                          Boolean judgeCorrect, String judgeReason, String judgeRawOutput, EvalDiagnosis diagnosis,
+                          boolean needsHumanReview, String reviewReason, String error, long latencyMs, Stages stages) {
+        this(caseId, question, referenceAnswer, expectedFileMd5s, expectedFileNames, expectedEvidence, retrievalMode,
+                retrieved, retrievalHit, docHit, firstRelevantRank, reciprocalRank, expectedDocCoverage, answer, judgeScore,
+                judgeCorrect, judgeReason, judgeRawOutput, diagnosis, needsHumanReview, reviewReason, error, latencyMs,
+                stages, null, null);
     }
 
     /**
@@ -76,6 +96,11 @@ public record EvalCaseResult(
      * @param irrelevantInTopK       最终返回结果里不相关的条数（无答案用例里所有返回都算不相关）
      * @param returnedCount          最终返回条数
      * @param candidates             RRF 候选明细（带 RRF 原始分），用于离线分析阈值
+     * @param evidenceCoverageAtK    前 topK 条覆盖了多少比例的期望证据短语（0~1），没有标注证据时为 null
+     * @param evidenceCoverageDelivered 实际交给生成的全部片段覆盖了多少比例的证据（拆分子问题后条数多于 topK 时用它）
+     * @param candidateEvidenceCoverage 重排前候选池的证据覆盖率，用来区分"没召回"和"召回了但没进 topK"
+     * @param subQuestions           模型拆出的子问题；为空表示模型判断这是单一问题、按原问题检索
+     * @param planFallbackReason     拆分判定调用失败的原因；null 表示没开拆分或判定成功
      */
     public record Stages(Boolean candidateHit,
                          int candidateCount,
@@ -89,7 +114,36 @@ public record EvalCaseResult(
                          Double precisionAtK,
                          int irrelevantInTopK,
                          int returnedCount,
-                         List<RetrievedChunk> candidates) {
+                         List<RetrievedChunk> candidates,
+                         Double evidenceCoverageAtK,
+                         Double evidenceCoverageDelivered,
+                         Double candidateEvidenceCoverage,
+                         List<String> subQuestions,
+                         String planFallbackReason) {
+
+        public Stages(Boolean candidateHit, int candidateCount, Integer relevantInCandidates, Double ndcgAtK,
+                      Boolean bm25Hit, Integer bm25FirstRank, Boolean knnHit, Integer knnFirstRank,
+                      int thresholdDroppedInTopK, Double precisionAtK, int irrelevantInTopK, int returnedCount,
+                      List<RetrievedChunk> candidates) {
+            this(candidateHit, candidateCount, relevantInCandidates, ndcgAtK, bm25Hit, bm25FirstRank, knnHit,
+                    knnFirstRank, thresholdDroppedInTopK, precisionAtK, irrelevantInTopK, returnedCount, candidates,
+                    null, null, null, List.of(), null);
+        }
+    }
+
+    /**
+     * 分阶段耗时：检索总耗时、生成、评委；检索内部再拆 embedding、两路召回、RRF、rerank。
+     * 两路召回并行执行，bm25Ms 和 knnMs 是各自路径的耗时，不能相加当成检索总耗时。
+     */
+    public record Timings(long retrievalMs,
+                          long generationMs,
+                          long judgeMs,
+                          long totalMs,
+                          Long embeddingMs,
+                          Long bm25Ms,
+                          Long knnMs,
+                          Long rrfMs,
+                          Long rerankMs) {
     }
 
     public boolean judged() {

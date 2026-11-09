@@ -3,10 +3,12 @@ package com.yizhaoqi.smartpai.service;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.BulkRequest;
 import co.elastic.clients.elasticsearch.core.BulkResponse;
+import co.elastic.clients.elasticsearch.core.CountRequest;
 import co.elastic.clients.elasticsearch.core.CountResponse;
 import co.elastic.clients.elasticsearch.core.DeleteByQueryRequest;
 import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
+import co.elastic.clients.elasticsearch.indices.RefreshRequest;
 import com.yizhaoqi.smartpai.entity.EsDocument;
 import com.yizhaoqi.smartpai.service.index.KnowledgeIndexNames;
 import org.slf4j.Logger;
@@ -105,6 +107,39 @@ public class ElasticsearchService {
             return response.count();
         } catch (Exception e) {
             throw new RuntimeException("统计文档失败", e);
+        }
+    }
+
+    /**
+     * 统计某个构建写入别名的分块数，用于构建完成前的分块数核对。
+     * 先刷新别名，保证刚写入的分块对随后的 count 可见，避免把写入延迟误判成核对失败
+     */
+    public long countByBuildId(String buildId) {
+        try {
+            // 用请求对象而不是函数式重载：函数式重载是 final 方法，测试里无法用 mock 客户端验证刷新顺序
+            esClient.indices().refresh(RefreshRequest.of(r -> r.index(KnowledgeIndexNames.ALIAS)));
+            CountRequest request = CountRequest.of(c -> c
+                    .index(KnowledgeIndexNames.ALIAS)
+                    .query(q -> q.term(t -> t.field("buildId").value(buildId))));
+            CountResponse response = esClient.count(request);
+            return response.count();
+        } catch (Exception e) {
+            throw new RuntimeException("统计构建分块数失败", e);
+        }
+    }
+
+    /**
+     * 按构建标识删除指定索引中的分块，用于失败构建的残留清理
+     */
+    public void deleteByBuildId(String index, String buildId) {
+        try {
+            esClient.deleteByQuery(d -> d
+                    .index(index)
+                    .allowNoIndices(true)
+                    .ignoreUnavailable(true)
+                    .query(q -> q.term(t -> t.field("buildId").value(buildId))));
+        } catch (Exception e) {
+            throw new RuntimeException("删除构建数据失败", e);
         }
     }
 

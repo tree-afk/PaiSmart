@@ -7,6 +7,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RetrievalMetricsTest {
@@ -79,6 +80,45 @@ class RetrievalMetricsTest {
         EvalCase evalCase = new EvalCase("1", "q", List.of("m1"), List.of(), "r", List.of("分片 上传"));
 
         assertTrue(RetrievalMetrics.isRelevant(chunk, evalCase));
+    }
+
+    @Test
+    void evidenceCoverageCountsEachPhraseSeparately() {
+        List<SearchResult> chunks = List.of(
+                new SearchResult("s3", 5, "单笔贷款中合作方出资比例不得低于20%", 0.9, "s3.md"),
+                new SearchResult("s3", 3, "其他条款", 0.8, "s3.md"));
+        EvalCase evalCase = new EvalCase("1", "q", List.of(), List.of("s3.md", "r9.md"), "r",
+                List.of("单笔贷款中合作方出资比例不得低于30%", "单笔贷款中合作方出资比例不得低于20%"));
+
+        assertEquals(0.5, RetrievalMetrics.evidenceCoverage(chunks, evalCase, 5), 1e-9,
+                "只覆盖两句中的一句时记 0.5，而不是像命中布尔那样记满分");
+    }
+
+    @Test
+    void evidenceCoverageHonoursKAndReturnsNullWithoutEvidence() {
+        List<SearchResult> chunks = List.of(
+                new SearchResult("m1", 1, "无关内容", 0.9, "a.pdf"),
+                new SearchResult("m1", 2, "单笔贷款中合作方出资比例不得低于30%", 0.8, "a.pdf"));
+        EvalCase evalCase = new EvalCase("1", "q", List.of("m1"), List.of(), "r",
+                List.of("单笔贷款中合作方出资比例不得低于30%"));
+
+        assertEquals(0.0, RetrievalMetrics.evidenceCoverage(chunks, evalCase, 1), 1e-9);
+        assertEquals(1.0, RetrievalMetrics.evidenceCoverage(chunks, evalCase, 2), 1e-9);
+        assertNull(RetrievalMetrics.evidenceCoverage(chunks, new EvalCase("2", "q", List.of("m1"), List.of(), "r"), 5));
+    }
+
+    @Test
+    void candidateEvidenceCoverageSeparatesRecallFromTopK() {
+        List<SearchResult> candidates = List.of(
+                new SearchResult("s3", 5, "单笔贷款中合作方出资比例不得低于20%", 0.9, "s3.md"),
+                new SearchResult("s3", 3, "其他条款", 0.8, "s3.md"),
+                new SearchResult("r9", 1, "单笔贷款中合作方出资比例不得低于30%", 0.7, "r9.md"));
+        EvalCase evalCase = new EvalCase("1", "q", List.of(), List.of("s3.md", "r9.md"), "r",
+                List.of("单笔贷款中合作方出资比例不得低于30%", "单笔贷款中合作方出资比例不得低于20%"));
+
+        assertEquals(1.0, RetrievalMetrics.candidateEvidenceCoverage(candidates, evalCase), 1e-9);
+        assertEquals(0.5, RetrievalMetrics.evidenceCoverage(candidates, evalCase, 2), 1e-9,
+                "前 2 条只覆盖本行那句，监管那句在候选池里但没进 topK");
     }
 
     private static SearchResult result(String md5, String fileName) {

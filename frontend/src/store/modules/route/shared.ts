@@ -22,10 +22,10 @@ export function filterAuthRoutesByRoles(routes: ElegantConstRoute[], role: strin
 function filterAuthRouteByRoles(route: ElegantConstRoute, role: string): ElegantConstRoute[] {
   const routeRoles = (route.meta && route.meta.roles) || [];
 
-  // if the route's "roles" is empty, then it is allowed to access
+  // if the route's roles are empty, then it is allowed to access
   const isEmptyRoles = !routeRoles.length;
 
-  // if the user's role is included in the route's "roles", then it is allowed to access
+  // if the user's role is included in the route's roles, then it is allowed to access
   const hasPermission = routeRoles.includes(role);
 
   const filterRoute = { ...route };

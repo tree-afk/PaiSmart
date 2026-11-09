@@ -24,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import com.yizhaoqi.smartpai.config.AiProperties;
 import com.yizhaoqi.smartpai.service.ModelProviderConfigService;
 import com.yizhaoqi.smartpai.service.UsageQuotaService;
+import com.yizhaoqi.smartpai.utils.RequestDeadline;
 import reactor.core.Disposable;
 
 @Service
@@ -100,13 +101,37 @@ public class DeepSeekClient {
     }
 
     public String summarize(String requesterId, String topic, List<SearchResult> searchResults) {
-        return summarize(requesterId, topic, searchResults, null);
+        return summarize(requesterId, topic, searchResults, null, 1);
     }
 
     public String summarize(String requesterId,
                             String topic,
                             List<SearchResult> searchResults,
                             Consumer<String> onChunk) {
+        return summarize(requesterId, topic, searchResults, onChunk, 1);
+    }
+
+    /**
+     * @param firstReferenceNumber 摘要上下文里的第一条来源编号；外层可能已经分配过检索引用，
+     *                             摘要必须沿用同一套全局编号，避免 [1] 指到另一份资料。
+     */
+    public String summarize(String requesterId,
+                            String topic,
+                            List<SearchResult> searchResults,
+                            Consumer<String> onChunk,
+                            int firstReferenceNumber) {
+        return summarize(requesterId, topic, searchResults, onChunk, firstReferenceNumber, null);
+    }
+
+    /**
+     * @param cancelRegistrar 供聊天停止句柄登记内部摘要订阅；收到停止时立即 dispose 上游请求
+     */
+    public String summarize(String requesterId,
+                            String topic,
+                            List<SearchResult> searchResults,
+                            Consumer<String> onChunk,
+                            int firstReferenceNumber,
+                            Consumer<Runnable> cancelRegistrar) {
         if (topic == null || topic.isBlank()) {
             throw new IllegalArgumentException("摘要主题不能为空");
         }
@@ -118,7 +143,7 @@ public class DeepSeekClient {
             return noResult;
         }
 
-        List<Map<String, String>> messages = buildSummaryMessages(topic, searchResults);
+        List<Map<String, String>> messages = buildSummaryMessages(topic, searchResults, firstReferenceNumber);
         int estimatedPromptTokens = usageQuotaService.estimateChatTokens(messages);
         int maxCompletionTokens = aiProperties.getGeneration().getMaxTokens() != null
                 ? aiProperties.getGeneration().getMaxTokens()
@@ -146,7 +171,7 @@ public class DeepSeekClient {
             }
 
             usageTracker = new StreamUsageTracker(reservation, estimatedPromptTokens);
-            String summary = executeSummaryStream(summaryEndpoint, request, usageTracker, onChunk);
+            String summary = executeSummaryStream(summaryEndpoint, request, usageTracker, onChunk, cancelRegistrar);
             logger.info("generate_summary 内部摘要完成: provider={}, model={}, promptTokensEstimate={}, summaryChars={}",
                     summaryEndpoint.provider(), summaryEndpoint.model(), estimatedPromptTokens, summary.length());
             return summary;
@@ -161,7 +186,8 @@ public class DeepSeekClient {
     private String executeSummaryStream(SummaryEndpoint summaryEndpoint,
                                         Map<String, Object> request,
                                         StreamUsageTracker usageTracker,
-                                        Consumer<String> onChunk) {
+                                        Consumer<String> onChunk,
+                                        Consumer<Runnable> cancelRegistrar) {
         CompletableFuture<String> summaryFuture = new CompletableFuture<>();
         long startedAt = System.currentTimeMillis();
         AtomicBoolean firstChunkLogged = new AtomicBoolean(false);
@@ -205,28 +231,67 @@ public class DeepSeekClient {
                         }
                 );
 
-        try {
-            String summary = summaryFuture.get(90, TimeUnit.SECONDS);
-            if (summary == null || summary.isBlank()) {
-                throw new IllegalStateException("DeepSeek 摘要流未返回有效内容");
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        if (cancelRegistrar != null) {
+            cancelRegistrar.accept(() -> {
+                if (cancelled.compareAndSet(false, true)) {
+                    subscription.dispose();
+                }
+            });
+        }
+        return awaitSummary(summaryFuture, subscription, usageTracker, cancelled);
+    }
+
+    /**
+     * 摘要等待同时受两层约束：自身 90 秒上限，以及整轮请求 RequestDeadline 的剩余预算。
+     * 轮询等待而不是一次 get 90 秒，确保用户点停止后能在一个轮询周期内 dispose 上游订阅。
+     */
+    private String awaitSummary(CompletableFuture<String> summaryFuture,
+                                Disposable subscription,
+                                StreamUsageTracker usageTracker,
+                                AtomicBoolean cancelled) {
+        long configuredDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
+        long deadline = RequestDeadline.currentNanos()
+                .map(requestDeadline -> Math.min(requestDeadline, configuredDeadline))
+                .orElse(configuredDeadline);
+        while (true) {
+            if (cancelled.get()) {
+                subscription.dispose();
+                settleUsage(usageTracker);
+                throw new RuntimeException("DeepSeek 摘要流式响应已取消");
             }
-            return summary;
-        } catch (TimeoutException e) {
-            subscription.dispose();
-            settleUsage(usageTracker);
-            throw new RuntimeException("DeepSeek 摘要流式响应超时", e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            subscription.dispose();
-            settleUsage(usageTracker);
-            throw new RuntimeException("DeepSeek 摘要流式响应被中断", e);
-        } catch (ExecutionException e) {
-            subscription.dispose();
-            Throwable cause = e.getCause() == null ? e : e.getCause();
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0) {
+                subscription.dispose();
+                settleUsage(usageTracker);
+                throw new RuntimeException("DeepSeek 摘要流式响应超时",
+                        new TimeoutException("摘要超出整轮请求剩余时间"));
             }
-            throw new RuntimeException("DeepSeek 摘要流式响应失败", cause);
+            long waitMillis = Math.min(
+                    TimeUnit.NANOSECONDS.toMillis(remainingNanos), 200L);
+            try {
+                String summary = summaryFuture.get(Math.max(waitMillis, 1L), TimeUnit.MILLISECONDS);
+                if (summary == null || summary.isBlank()) {
+                    subscription.dispose();
+                    settleUsage(usageTracker);
+                    throw new IllegalStateException("DeepSeek 摘要流未返回有效内容");
+                }
+                return summary;
+            } catch (TimeoutException ignored) {
+                // 短轮询用于及时响应停止和整轮预算耗尽
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                subscription.dispose();
+                settleUsage(usageTracker);
+                throw new RuntimeException("DeepSeek 摘要流式响应被中断", e);
+            } catch (ExecutionException e) {
+                subscription.dispose();
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                if (cause instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new RuntimeException("DeepSeek 摘要流式响应失败", cause);
+            }
         }
     }
 
@@ -273,28 +338,36 @@ public class DeepSeekClient {
         return request;
     }
 
-    private List<Map<String, String>> buildSummaryMessages(String topic, List<SearchResult> searchResults) {
+    List<Map<String, String>> buildSummaryMessages(String topic, List<SearchResult> searchResults,
+                                                   int firstReferenceNumber) {
         List<Map<String, String>> messages = new ArrayList<>();
         messages.add(Map.of(
                 "role", "system",
                 "content", "你是 generate_summary 工具内部使用的知识库摘要模型。"
                         + "只基于提供的知识库片段生成结构化摘要，不要发起工具调用，不要把自己当作外层 ReAct 循环。"
                         + "输出应包含：核心结论、关键依据、可执行建议或待确认问题。"
+                        + "引用必须使用片段前面的 [N] 编号，不能重新编号或编造来源。"
+                        + "文档类型只用于说明资料来源，不是效力等级；不要把 REGULATION 自动当成适用于所有机构或地区。"
+                        + "冲突时列出各来源的发布机构、适用地区/适用机构、生效/失效/废止状态、条款号和差异；无法确认时保留“待核实/需法务确认”。"
+                        + "validity=UNCONFIRMED 必须写成“生效日期未标注，效力待确认”，不得当作现行依据；"
+                        + "validity=EFFECTIVE 只能写成“标注生效日期已到且未标注失效”，不得直接断言现行有效。"
+                        + "issuer 只是发布机构，appliesTo 才是适用机构。"
         ));
         messages.add(Map.of(
                 "role", "user",
-                "content", "主题：" + topic + "\n\n知识库片段：\n" + buildSummaryContext(searchResults)
+                "content", "主题：" + topic + "\n\n知识库片段（编号从 [" + firstReferenceNumber + "] 开始）：\n"
+                        + buildSummaryContext(searchResults, firstReferenceNumber)
         ));
         return messages;
     }
 
-    private String buildSummaryContext(List<SearchResult> searchResults) {
+    private String buildSummaryContext(List<SearchResult> searchResults, int firstReferenceNumber) {
         StringBuilder context = new StringBuilder();
         // 父子检索：有父块时给父块，多个命中共用的父块只给一次
         java.util.Set<String> emittedParents = new java.util.HashSet<>();
         for (int i = 0; i < searchResults.size(); i++) {
             SearchResult result = searchResults.get(i);
-            context.append("[").append(i + 1).append("] ");
+            context.append("[").append(firstReferenceNumber + i).append("] ");
             if (result.getFileName() != null && !result.getFileName().isBlank()) {
                 context.append("文件：").append(result.getFileName()).append("，");
             }
@@ -302,6 +375,36 @@ public class DeepSeekClient {
                     .append("，chunkId=").append(result.getChunkId());
             if (result.getPageNumber() != null) {
                 context.append("，page=").append(result.getPageNumber());
+            }
+            if (result.getDocType() != null && !result.getDocType().isBlank()) {
+                context.append("，docType=").append(result.getDocType());
+            }
+            if (result.getJurisdiction() != null && !result.getJurisdiction().isBlank()) {
+                context.append("，jurisdiction=").append(result.getJurisdiction());
+            }
+            if (result.getIssuer() != null && !result.getIssuer().isBlank()) {
+                context.append("，issuer=").append(result.getIssuer());
+            }
+            if (result.getApplicableInstitutions() != null && !result.getApplicableInstitutions().isBlank()) {
+                context.append("，appliesTo=").append(result.getApplicableInstitutions());
+            }
+            if (result.getEffectiveAt() != null && !result.getEffectiveAt().isBlank()) {
+                context.append("，effectiveAt=").append(result.getEffectiveAt());
+            }
+            if (result.getExpiresAt() != null && !result.getExpiresAt().isBlank()) {
+                context.append("，expiresAt=").append(result.getExpiresAt());
+            }
+            if (result.getValidityStatus() != null && !result.getValidityStatus().isBlank()) {
+                context.append("，validity=").append(result.getValidityStatus());
+                if (result.getValidityLabel() != null && !result.getValidityLabel().isBlank()) {
+                    context.append('(').append(result.getValidityLabel()).append(')');
+                }
+            }
+            if (result.getArticlePath() != null && !result.getArticlePath().isBlank()) {
+                context.append("，article=").append(result.getArticlePath());
+            }
+            if (result.getClauseNo() != null && !result.getClauseNo().isBlank()) {
+                context.append("，clause=").append(result.getClauseNo());
             }
             String matched = result.getMatchedChunkText() != null ? result.getMatchedChunkText() : result.getTextContent();
             boolean newParent = result.getParentContext() != null && !result.getParentContext().isBlank()

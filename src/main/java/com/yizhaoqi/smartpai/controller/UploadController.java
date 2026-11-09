@@ -1,16 +1,14 @@
 package com.yizhaoqi.smartpai.controller;
 
-import com.yizhaoqi.smartpai.config.KafkaConfig;
 import com.yizhaoqi.smartpai.exception.CustomException;
-import com.yizhaoqi.smartpai.model.FileProcessingTask;
+import com.yizhaoqi.smartpai.model.ComplianceMetadata;
+import com.yizhaoqi.smartpai.model.DocumentComplianceType;
 import com.yizhaoqi.smartpai.model.FileUpload;
-import com.yizhaoqi.smartpai.model.OrganizationTag;
 import com.yizhaoqi.smartpai.repository.FileUploadRepository;
 import com.yizhaoqi.smartpai.service.FileTypeValidationService;
 import com.yizhaoqi.smartpai.service.ParseService;
 import com.yizhaoqi.smartpai.service.UploadService;
-import com.yizhaoqi.smartpai.service.UserService;
-import com.yizhaoqi.smartpai.service.reliability.FileProcessingOutboxService;
+import com.yizhaoqi.smartpai.service.document.DocumentVersionService;
 import com.yizhaoqi.smartpai.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -19,7 +17,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.List;
@@ -31,17 +31,12 @@ import java.util.Set;
 @RequestMapping("/api/v1/upload")
 public class UploadController {
 
-    private static final long DEFAULT_CHUNK_SIZE_BYTES = 5L * 1024 * 1024L;
+    /** 共享知识库不再按组织隔离；该值仅用于兼容旧的 file_upload/version 存储字段。 */
+    private static final String SHARED_ORG_TAG = "DEFAULT";
 
     @Autowired
     private UploadService uploadService;
 
-    @Autowired
-    private KafkaConfig kafkaConfig;
-
-    @Autowired
-    private UserService userService;
-    
     @Autowired
     private FileUploadRepository fileUploadRepository;
     
@@ -52,7 +47,7 @@ public class UploadController {
     private ParseService parseService;
 
     @Autowired
-    private FileProcessingOutboxService fileProcessingOutboxService;
+    private DocumentVersionService documentVersionService;
 
     public UploadController(UploadService uploadService) {
         this.uploadService = uploadService;
@@ -114,47 +109,11 @@ public class UploadController {
             LogUtils.logBusiness("UPLOAD_CHUNK", userId, "接收到分片上传请求: fileMd5=%s, chunkIndex=%d, fileName=%s, fileType=%s, contentType=%s, fileSize=%d, totalSize=%d, orgTag=%s, isPublic=%s", 
                     fileMd5, chunkIndex, fileName, fileType, contentType, file.getSize(), totalSize, orgTag, isPublic);
         
-            // 如果未指定组织标签，则获取用户的主组织标签
-            if (orgTag == null || orgTag.isEmpty()) {
-                try {
-                    LogUtils.logBusiness("UPLOAD_CHUNK", userId, "组织标签未指定，尝试获取用户主组织标签: fileName=%s", fileName);
-                    String primaryOrg = userService.getUserPrimaryOrg(userId);
-                    orgTag = primaryOrg;
-                    LogUtils.logBusiness("UPLOAD_CHUNK", userId, "成功获取用户主组织标签: fileName=%s, orgTag=%s", fileName, orgTag);
-                } catch (Exception e) {
-                    LogUtils.logBusinessError("UPLOAD_CHUNK", userId, "获取用户主组织标签失败: fileName=%s", e, fileName);
-                    monitor.end("获取主组织标签失败: " + e.getMessage());
-                    Map<String, Object> errorResponse = new HashMap<>();
-                    errorResponse.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
-                    errorResponse.put("message", "获取用户主组织标签失败: " + e.getMessage());
-                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
-                }
-            }
+            // 共享库上传资格由 KnowledgeAuthorizationFilter 的 FILE_MANAGER 校验决定；
+            // 组织字段只保留给旧存储兼容，忽略客户端传值，统一派生为 DEFAULT。
+            orgTag = SHARED_ORG_TAG;
+            isPublic = true;
 
-            userService.validateUploadOrganization(userId, orgTag);
-
-            if (!userService.isAdminUser(userId)) {
-                OrganizationTag uploadOrg = userService.getOrganizationTag(orgTag);
-                Long uploadMaxSizeBytes = uploadOrg.getUploadMaxSizeBytes();
-                long estimatedUploadedBytes = (long) chunkIndex * DEFAULT_CHUNK_SIZE_BYTES + file.getSize();
-                boolean exceedsLimit = uploadMaxSizeBytes != null
-                        && uploadMaxSizeBytes > 0
-                        && (totalSize > uploadMaxSizeBytes || estimatedUploadedBytes > uploadMaxSizeBytes);
-                if (exceedsLimit) {
-                    LogUtils.logUserOperation(userId, "UPLOAD_CHUNK", fileName, "FAILED_SIZE_LIMIT_EXCEEDED");
-                    monitor.end("分片上传失败: 文件超过组织上传大小限制");
-
-                    Map<String, Object> errorResponse = new HashMap<>();
-                    errorResponse.put("code", HttpStatus.PAYLOAD_TOO_LARGE.value());
-                    errorResponse.put("message", "当前组织限制非管理员上传文件不超过 " + formatSize(uploadMaxSizeBytes)
-                            + "，当前文件大小为 " + formatSize(totalSize));
-                    errorResponse.put("limitBytes", uploadMaxSizeBytes);
-                    errorResponse.put("fileSizeBytes", totalSize);
-                    errorResponse.put("orgTag", orgTag);
-                    return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(errorResponse);
-                }
-            }
-        
             LogUtils.logFileOperation(userId, "UPLOAD_CHUNK", fileName, fileMd5, "PROCESSING");
         
             uploadService.uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic, userId);
@@ -269,6 +228,16 @@ public class UploadController {
         
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("MERGE_FILE");
         try {
+            ComplianceMetadata compliance = resolveComplianceMetadata(request);
+            boolean hasDocumentId = request.documentId() != null && !request.documentId().isBlank();
+            boolean hasLegacyFileMd5 = request.legacyFileMd5() != null && !request.legacyFileMd5().isBlank();
+            if (hasDocumentId && hasLegacyFileMd5) {
+                throw new CustomException("不能同时指定目标文档和旧文档", HttpStatus.BAD_REQUEST);
+            }
+            if (hasLegacyFileMd5 && request.legacyFileMd5().equals(request.fileMd5())) {
+                throw new CustomException("新旧文件内容相同，未创建新版本", HttpStatus.CONFLICT);
+            }
+
             String fileType = getFileType(request.fileName());
             LogUtils.logBusiness("MERGE_FILE", userId, "接收到合并文件请求: fileMd5=%s, fileName=%s, fileType=%s", 
                     request.fileMd5(), request.fileName(), fileType);
@@ -296,13 +265,18 @@ public class UploadController {
             if (fileUpload.getStatus() == FileUpload.STATUS_COMPLETED) {
                 LogUtils.logBusiness("MERGE_FILE", userId, "文件已完成合并，按幂等成功返回: fileMd5=%s, fileName=%s", request.fileMd5(), request.fileName());
                 monitor.end("文件已完成合并");
-                return buildAlreadyMergedResponse(request.fileMd5());
+                return buildCompletedMergeResponse(fileUpload, request, userId, compliance);
             }
 
             if (fileUpload.getStatus() == FileUpload.STATUS_MERGING) {
                 throw new CustomException("文件正在合并中，请稍后重试", HttpStatus.CONFLICT);
             }
-            
+
+            // 合并前校验目标：归属、软删除、重复内容、共享 md5、旧文件未完成都在改状态前拒绝，
+            // 避免分片已合并成 COMPLETED 之后才因目标不可用而无法创建版本
+            documentVersionService.validateUploadTarget(
+                    fileUpload, userId, request.documentId(), request.legacyFileMd5());
+
             LogUtils.logBusiness("MERGE_FILE", userId, "权限验证通过，开始合并文件: fileMd5=%s, fileName=%s, fileType=%s", request.fileMd5(), request.fileName(), fileType);
             
             // 检查分片是否全部上传完成
@@ -332,7 +306,7 @@ public class UploadController {
                 if (latestFileUpload.getStatus() == FileUpload.STATUS_COMPLETED) {
                     LogUtils.logBusiness("MERGE_FILE", userId, "文件已被其他请求合并完成，按幂等成功返回: fileMd5=%s, fileName=%s", request.fileMd5(), request.fileName());
                     monitor.end("文件已完成合并");
-                    return buildAlreadyMergedResponse(request.fileMd5());
+                    return buildCompletedMergeResponse(latestFileUpload, request, userId, compliance);
                 }
                 if (latestFileUpload.getStatus() == FileUpload.STATUS_MERGING) {
                     throw new CustomException("文件正在合并中，请稍后重试", HttpStatus.CONFLICT);
@@ -382,29 +356,27 @@ public class UploadController {
                 );
             }
 
-            // 发送任务到 Kafka，包含完整的权限信息
-            LogUtils.logBusiness("MERGE_FILE", userId, "创建文件处理任务: fileMd5=%s, fileName=%s, fileType=%s, orgTag=%s, isPublic=%s", 
-                    request.fileMd5(), request.fileName(), fileType, fileUpload.getOrgTag(), fileUpload.isPublic());
-            
-            FileProcessingTask task = new FileProcessingTask(
-                    request.fileMd5(),
-                    objectUrl,
-                    request.fileName(),
-                    fileUpload.getUserId(),
-                    fileUpload.getOrgTag(),
-                    fileUpload.isPublic(),
-                    FileProcessingTask.TASK_TYPE_UPLOAD_PROCESS,
-                    userId
-            );
-
-            // 状态改成待处理和待投递消息同一事务提交（outbox），提交后再投递 Kafka；投递失败由定时任务补发
-            fileProcessingOutboxService.enqueueVectorization(fileUpload, task, true);
-            LogUtils.logBusiness("MERGE_FILE", userId, "文件处理任务已提交: topic=%s, fileMd5=%s, fileName=%s, fileType=%s",
-                    kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName(), fileType);
+            // 合并成功后在同一事务内落库业务文档/内容版本/索引构建并写 outbox：
+            // 首传、新增版本或 legacy 懒迁移都由版本服务统一解析，任务权限取版本快照
+            LogUtils.logBusiness("MERGE_FILE", userId,
+                    "创建内容版本与处理任务: fileMd5=%s, fileName=%s, fileType=%s, documentId=%s, legacyFileMd5=%s, docType=%s, effectiveAt=%s",
+                    request.fileMd5(), request.fileName(), fileType, request.documentId(), request.legacyFileMd5(),
+                    compliance.docType(), compliance.effectiveAt());
+            DocumentVersionService.VersionBuild versionBuild = documentVersionService.createAndEnqueue(
+                    fileUpload, userId, objectUrl, request.documentId(), request.legacyFileMd5(), compliance);
+            LogUtils.logBusiness("MERGE_FILE", userId,
+                    "文件处理任务已提交: fileMd5=%s, fileName=%s, documentId=%s, versionId=%s, buildId=%s, orgTag=%s, isPublic=%s",
+                    request.fileMd5(), request.fileName(), versionBuild.documentId(),
+                    versionBuild.versionId(), versionBuild.buildId(), versionBuild.orgTag(), versionBuild.isPublic());
 
             // 构建数据对象
             Map<String, Object> data = new HashMap<>();
             data.put("object_url", objectUrl);
+            data.put("documentId", versionBuild.documentId());
+            data.put("versionId", versionBuild.versionId());
+            data.put("buildId", versionBuild.buildId());
+            data.put("versionNo", versionBuild.versionNo());
+            data.put("buildNo", versionBuild.buildNo());
             if (embeddingEstimate != null) {
                 data.put("estimatedEmbeddingTokens", embeddingEstimate.estimatedTokens());
                 data.put("estimatedChunkCount", embeddingEstimate.estimatedChunkCount());
@@ -440,15 +412,100 @@ public class UploadController {
         }
     }
 
-    private ResponseEntity<Map<String, Object>> buildAlreadyMergedResponse(String fileMd5) throws Exception {
+    /**
+     * 已合并文件的幂等返回：已有版本时校验目标文档一致后返回构建信息；没有版本时补建版本与任务，
+     * 不再返回没有版本信息的合并结果，避免上传记录永久停在“已完成但未版本化”。
+     */
+    private ResponseEntity<Map<String, Object>> buildCompletedMergeResponse(
+            FileUpload fileUpload, MergeRequest request, String userId, ComplianceMetadata compliance) throws Exception {
+        Optional<DocumentVersionService.VersionBuild> existing =
+                documentVersionService.findByFileUploadId(fileUpload.getId());
+        if (existing.isPresent()) {
+            DocumentVersionService.VersionBuild versionBuild = existing.get();
+            requireSameMergeTarget(versionBuild, request, userId);
+            return buildMergeResponse(uploadService.generateMergedObjectUrl(request.fileMd5()), versionBuild);
+        }
+
+        String objectUrl = uploadService.generateMergedObjectUrl(request.fileMd5());
+        DocumentVersionService.VersionBuild versionBuild = documentVersionService.createAndEnqueue(
+                fileUpload, userId, objectUrl, request.documentId(), request.legacyFileMd5(), compliance);
+        LogUtils.logBusiness("MERGE_FILE", userId,
+                "已补建缺失的内容版本: fileMd5=%s, documentId=%s, versionId=%s, buildId=%s",
+                request.fileMd5(), versionBuild.documentId(), versionBuild.versionId(), versionBuild.buildId());
+        return buildMergeResponse(objectUrl, versionBuild);
+    }
+
+    /**
+     * 幂等返回前确认本次请求的目标与已有版本属于同一文档；目标不一致返回 409，不把文件悄悄返回成别的文档。
+     */
+    private void requireSameMergeTarget(DocumentVersionService.VersionBuild versionBuild,
+                                        MergeRequest request, String userId) {
+        if (request.documentId() != null && !request.documentId().isBlank()
+                && !request.documentId().equals(versionBuild.documentId())) {
+            throw new CustomException("该文件已关联其他文档，不能作为目标文档的新版本", HttpStatus.CONFLICT);
+        }
+        if (request.legacyFileMd5() == null || request.legacyFileMd5().isBlank()) {
+            return;
+        }
+        FileUpload legacyUpload = fileUploadRepository
+                .findFirstByFileMd5AndUserIdOrderByCreatedAtDesc(request.legacyFileMd5(), userId)
+                .orElseThrow(() -> new CustomException("旧文档不存在", HttpStatus.NOT_FOUND));
+        Optional<DocumentVersionService.VersionBuild> legacyVersion =
+                documentVersionService.findByFileUploadId(legacyUpload.getId());
+        if (legacyVersion.isEmpty() || !legacyVersion.get().documentId().equals(versionBuild.documentId())) {
+            throw new CustomException("该文件已关联其他文档，不能作为旧文档的新版本", HttpStatus.CONFLICT);
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> buildMergeResponse(
+            String objectUrl, DocumentVersionService.VersionBuild versionBuild) {
         Map<String, Object> data = new HashMap<>();
-        data.put("object_url", uploadService.generateMergedObjectUrl(fileMd5));
+        data.put("object_url", objectUrl);
+        data.put("documentId", versionBuild.documentId());
+        data.put("versionId", versionBuild.versionId());
+        data.put("buildId", versionBuild.buildId());
+        data.put("versionNo", versionBuild.versionNo());
+        data.put("buildNo", versionBuild.buildNo());
 
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "文件已完成合并");
         response.put("data", data);
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 解析并校验可选的合规元数据：docType 只接受约定的四种类型，日期必须是 ISO yyyy-MM-dd；
+     * 未填写的分类字段由版本服务在新版本上继承 active 版本；生效日期缺失时保持为空（效力待确认）。
+     */
+    private ComplianceMetadata resolveComplianceMetadata(MergeRequest request) {
+        String docType = null;
+        if (request.docType() != null && !request.docType().isBlank()) {
+            DocumentComplianceType type = DocumentComplianceType.fromCode(request.docType());
+            if (type == null) {
+                throw new CustomException("文档类型不合法，可选值：" + DocumentComplianceType.allowedCodesWithLabels(),
+                        HttpStatus.BAD_REQUEST);
+            }
+            docType = type.name();
+        }
+        LocalDate effectiveAt = parseDate(request.effectiveAt(), "生效日期");
+        LocalDate expiresAt = parseDate(request.expiresAt(), "失效日期");
+        if (effectiveAt != null && expiresAt != null && expiresAt.isBefore(effectiveAt)) {
+            throw new CustomException("失效日期不能早于生效日期", HttpStatus.BAD_REQUEST);
+        }
+        return new ComplianceMetadata(docType, request.jurisdiction(), request.issuer(), effectiveAt,
+                request.applicableInstitutions(), expiresAt, request.repealed());
+    }
+
+    private LocalDate parseDate(String value, String label) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.trim());
+        } catch (DateTimeParseException e) {
+            throw new CustomException(label + "格式不正确，应为 yyyy-MM-dd", HttpStatus.BAD_REQUEST);
+        }
     }
 
     /**
@@ -466,21 +523,27 @@ public class UploadController {
         return (double) uploadedChunks.size() / totalChunks * 100;
     }
 
-    private String formatSize(long sizeInBytes) {
-        double sizeInMb = sizeInBytes / (1024d * 1024d);
-        if (sizeInMb >= 1024d) {
-            return String.format("%.2f GB", sizeInMb / 1024d);
-        }
-        if (sizeInMb >= 1d) {
-            return String.format("%.2f MB", sizeInMb);
-        }
-        return String.format("%.2f KB", sizeInBytes / 1024d);
-    }
-
     /**
-     * 合并请求的辅助类，包含文件的MD5值和文件名
+     * 合并请求的辅助类，包含文件的MD5值和文件名。
+     * documentId 用于给已有业务文档上传新版本；legacyFileMd5 用于首次版本化旧文档，
+     * 两者同一请求内只能出现一个。
+     * docType/jurisdiction/issuer/effectiveAt/applicableInstitutions/expiresAt/repealed 为可选的合规元数据，
+     * 旧客户端不传时保持为空。
      */
-    public record MergeRequest(String fileMd5, String fileName) {}
+    public record MergeRequest(String fileMd5, String fileName, String documentId, String legacyFileMd5,
+                               String docType, String jurisdiction, String issuer, String effectiveAt,
+                               String applicableInstitutions, String expiresAt, boolean repealed) {
+
+        public MergeRequest(String fileMd5, String fileName, String documentId, String legacyFileMd5) {
+            this(fileMd5, fileName, documentId, legacyFileMd5, null, null, null, null, null, null, false);
+        }
+
+        public MergeRequest(String fileMd5, String fileName, String documentId, String legacyFileMd5,
+                            String docType, String jurisdiction, String issuer, String effectiveAt) {
+            this(fileMd5, fileName, documentId, legacyFileMd5, docType, jurisdiction, issuer, effectiveAt,
+                    null, null, false);
+        }
+    }
 
     /**
      * 获取支持的文件类型列表接口

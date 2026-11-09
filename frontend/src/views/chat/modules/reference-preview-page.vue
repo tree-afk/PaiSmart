@@ -23,6 +23,8 @@ const evidenceSnippet = ref('');
 const matchedChunkText = ref('');
 const score = ref<number | null>(null);
 const chunkId = ref<number | null>(null);
+const articlePath = ref('');
+const clauseNo = ref('');
 const referenceNumber = ref<number | undefined>(undefined);
 const sessionId = ref('');
 const previewKey = computed(() => String(route.query.previewKey || ''));
@@ -33,12 +35,18 @@ function readOptionalNumber(value: unknown) {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
+function pickText(value: unknown, fallback = '') {
+  return typeof value === 'string' && value ? value : fallback;
+}
+
 function syncFallbackFromQuery() {
   fileName.value = String(route.query.fileName || '');
   fileMd5.value = String(route.query.fileMd5 || '');
   pageNumber.value = readOptionalNumber(route.query.pageNumber);
   anchorText.value = String(route.query.anchorText || '');
   retrievalQuery.value = String(route.query.retrievalQuery || '');
+  articlePath.value = pickText(route.query.articlePath);
+  clauseNo.value = pickText(route.query.clauseNo);
   sessionId.value = String(route.query.sessionId || '');
   referenceNumber.value = readOptionalNumber(route.query.referenceNumber);
 }
@@ -55,6 +63,8 @@ function syncFromStorage() {
       fileMd5?: string;
       pageNumber?: number | null;
       anchorText?: string | null;
+      articlePath?: string | null;
+      clauseNo?: string | null;
       sessionId?: string | null;
       referenceNumber?: number | null;
     };
@@ -70,6 +80,8 @@ function syncFromStorage() {
     matchedChunkText.value = payload.matchedChunkText || matchedChunkText.value;
     score.value = payload.score ?? score.value;
     chunkId.value = payload.chunkId ?? chunkId.value;
+    articlePath.value = pickText(payload.articlePath, articlePath.value);
+    clauseNo.value = pickText(payload.clauseNo, clauseNo.value);
     sessionId.value = payload.sessionId || sessionId.value;
     referenceNumber.value = payload.referenceNumber || referenceNumber.value;
     return true;
@@ -118,6 +130,8 @@ async function loadReferenceDetail() {
     matchedChunkText.value = data.matchedChunkText || '';
     score.value = data.score ?? null;
     chunkId.value = data.chunkId ?? null;
+    articlePath.value = pickText(data.articlePath);
+    clauseNo.value = pickText(data.clauseNo);
   } catch (error: any) {
     loadError.value = error?.message || '引用详情加载失败';
   } finally {
@@ -170,6 +184,8 @@ watch(
         :matched-chunk-text="matchedChunkText"
         :score="score"
         :chunk-id="chunkId"
+        :article-path="articlePath"
+        :clause-no="clauseNo"
         :visible="true"
         @close="handleBack"
       />

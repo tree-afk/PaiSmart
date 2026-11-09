@@ -22,6 +22,7 @@ declare module 'vue-router' {
      * It only works when the route mode is "static", if the route mode is "dynamic", it will be ignored
      */
     roles?: string[];
+    /** Knowledge roles required by the route (READER/FILE_MANAGER/ROLE_MANAGER) */
     /** Whether to cache the route */
     keepAlive?: boolean | null;
     /**

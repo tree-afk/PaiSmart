@@ -13,7 +13,7 @@ import java.util.List;
 /**
  * 解析 JSONL 数据集，每行一个用例：
  * {"id": "可选", "question": "...", "expectedFileMd5s": ["..."], "expectedFileNames": ["..."],
- *  "expectedEvidence": ["答案分块里的关键短语"], "referenceAnswer": "..."}
+ *  "expectedEvidence": ["答案分块里的关键短语"], "referenceAnswer": "...", "expectedBehavior": "clarify_first"}
  * 空行和以 # 或 // 开头的注释行会被跳过；格式错误时报出行号。
  */
 public final class EvalDatasetParser {
@@ -63,7 +63,8 @@ public final class EvalDatasetParser {
         }
         String id = text(node, "id");
         return new EvalCase(id == null ? "line-" + lineNo : id, question, strings(node, "expectedFileMd5s"),
-                strings(node, "expectedFileNames"), reference, strings(node, "expectedEvidence"));
+                strings(node, "expectedFileNames"), reference, strings(node, "expectedEvidence"),
+                text(node, "expectedBehavior"));
     }
 
     private static String text(JsonNode node, String field) {

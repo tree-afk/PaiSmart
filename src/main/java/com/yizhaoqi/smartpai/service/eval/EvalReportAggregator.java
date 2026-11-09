@@ -1,5 +1,7 @@
 package com.yizhaoqi.smartpai.service.eval;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,6 +47,25 @@ public final class EvalReportAggregator {
         double irrelevantSum = 0d;
         int unlabeled = 0;
         double unlabeledReturned = 0d;
+        int coverageCases = 0;
+        double coverageAtKSum = 0d;
+        int deliveredCases = 0;
+        double deliveredSum = 0d;
+        int candidateCoverageCases = 0;
+        double candidateCoverageSum = 0d;
+        int decomposedCases = 0;
+        List<Long> totalLatencies = new ArrayList<>();
+        List<Long> retrievalLatencies = new ArrayList<>();
+        List<Long> generationLatencies = new ArrayList<>();
+        List<Long> judgeLatencies = new ArrayList<>();
+        int fallbackCases = 0;
+        int citationCases = 0;
+        int uncitedCases = 0;
+        int traceableCases = 0;
+        int relevanceCases = 0;
+        double citationCountSum = 0d;
+        double traceabilitySum = 0d;
+        double relevanceSum = 0d;
         Map<String, Long> diagnoses = new LinkedHashMap<>();
         for (EvalDiagnosis diagnosis : EvalDiagnosis.values()) {
             diagnoses.put(diagnosis.name(), 0L);
@@ -69,7 +90,38 @@ public final class EvalReportAggregator {
                 failed += FAILURES.contains(result.diagnosis()) ? 1 : 0;
                 diagnoses.merge(result.diagnosis().name(), 1L, Long::sum);
             }
-            modes.merge(result.retrievalMode() == null ? "NONE" : result.retrievalMode(), 1L, Long::sum);
+            String mode = result.retrievalMode() == null ? "NONE" : result.retrievalMode();
+            modes.merge(mode, 1L, Long::sum);
+            if (!mode.startsWith("HYBRID")) {
+                fallbackCases++;
+            }
+            EvalCaseResult.Timings timings = result.timings();
+            if (timings != null) {
+                totalLatencies.add(timings.totalMs());
+                retrievalLatencies.add(timings.retrievalMs());
+                if (timings.generationMs() > 0) {
+                    generationLatencies.add(timings.generationMs());
+                }
+                if (timings.judgeMs() > 0) {
+                    judgeLatencies.add(timings.judgeMs());
+                }
+            }
+            CitationMetrics citation = result.citation();
+            if (citation != null) {
+                citationCases++;
+                citationCountSum += citation.citationCount();
+                if (citation.uncited()) {
+                    uncitedCases++;
+                }
+                if (citation.traceabilityRate() != null) {
+                    traceableCases++;
+                    traceabilitySum += citation.traceabilityRate();
+                }
+                if (citation.relevanceRate() != null) {
+                    relevanceCases++;
+                    relevanceSum += citation.relevanceRate();
+                }
+            }
             EvalCaseResult.Stages stages = result.stages();
             if (stages != null) {
                 droppedCases += stages.thresholdDroppedInTopK() > 0 ? 1 : 0;
@@ -92,13 +144,48 @@ public final class EvalReportAggregator {
                         ndcgSum += stages.ndcgAtK();
                     }
                 }
+                if (stages.evidenceCoverageAtK() != null) {
+                    coverageCases++;
+                    coverageAtKSum += stages.evidenceCoverageAtK();
+                }
+                if (stages.evidenceCoverageDelivered() != null) {
+                    deliveredCases++;
+                    deliveredSum += stages.evidenceCoverageDelivered();
+                }
+                if (stages.candidateEvidenceCoverage() != null) {
+                    candidateCoverageCases++;
+                    candidateCoverageSum += stages.candidateEvidenceCoverage();
+                }
+                if (stages.subQuestions() != null && stages.subQuestions().size() >= 2) {
+                    decomposedCases++;
+                }
             }
         }
         EvalReport.StageSummary stageSummary = staged == 0 && unlabeled == 0 ? null
                 : new EvalReport.StageSummary(staged, ratio(candidateHits, staged), ratio(ndcgSum, ndcgCases), ndcgCases,
                 ratio(bm25Hits, staged), ratio(knnHits, staged), droppedCases, droppedResults,
                 ratio(precisionSum, precisionCases), ratio(irrelevantSum, staged), unlabeled,
-                ratio(unlabeledReturned, unlabeled));
+                ratio(unlabeledReturned, unlabeled), coverageCases, ratio(coverageAtKSum, coverageCases),
+                ratio(deliveredSum, deliveredCases), ratio(candidateCoverageSum, candidateCoverageCases),
+                decomposedCases);
+
+        EvalReport.LatencySummary latencySummary = totalLatencies.isEmpty() ? null
+                : new EvalReport.LatencySummary(
+                percentile(totalLatencies, 0.5), percentile(totalLatencies, 0.95),
+                percentile(retrievalLatencies, 0.5), percentile(retrievalLatencies, 0.95),
+                percentile(generationLatencies, 0.5), percentile(generationLatencies, 0.95),
+                percentile(judgeLatencies, 0.5), percentile(judgeLatencies, 0.95),
+                totalLatencies.size(), fallbackCases, ratio(fallbackCases, results.size()));
+
+        EvalReport.CitationSummary citationSummary = citationCases == 0 ? null
+                : new EvalReport.CitationSummary(
+                citationCases,
+                uncitedCases,
+                traceableCases,
+                relevanceCases,
+                ratio(citationCountSum, citationCases),
+                ratio(traceabilitySum, traceableCases),
+                ratio(relevanceSum, relevanceCases));
 
         return new EvalReport.EvalSummary(
                 results.size(),
@@ -117,7 +204,23 @@ public final class EvalReportAggregator {
                 failed,
                 modes,
                 diagnoses,
-                stageSummary);
+                stageSummary,
+                latencySummary,
+                citationSummary);
+    }
+
+    /**
+     * 最近秩百分位：n=4 时 P50 取第 2 个，P95 取最大值
+     */
+    private static Double percentile(List<Long> values, double percentile) {
+        if (values.isEmpty()) {
+            return null;
+        }
+        List<Long> sorted = new ArrayList<>(values);
+        Collections.sort(sorted);
+        int index = (int) Math.ceil(percentile * sorted.size()) - 1;
+        index = Math.max(0, Math.min(sorted.size() - 1, index));
+        return (double) sorted.get(index);
     }
 
     public static Map<String, String> diagnosisGuide() {

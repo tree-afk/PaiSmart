@@ -145,7 +145,7 @@ public class DocumentConflictService {
             logger.warn("冲突处理时待删除文件已不存在: fileMd5={}", fileMd5);
             return false;
         }
-        documentService.deleteDocument(fileMd5, upload.get().getUserId());
+        documentService.deleteLegacyDocument(fileMd5, upload.get().getUserId());
         return true;
     }
 

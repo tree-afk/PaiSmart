@@ -62,6 +62,18 @@ def main(paths):
                 # 噪声：Precision 的分母是实际返回条数，阈值少返回噪声时会上升；无答案题返回的每一条都是噪声
                 print(f"   噪声 Precision@K {fmt(st['meanPrecisionAtK'])}  每题不相关 {fmt(st['meanIrrelevantInTopK'], False)} 条"
                       f"  无答案题平均返回 {fmt(st['unlabeledMeanReturned'], False)} 条（{st['unlabeledCases']} 题）")
+        lat = s.get("latency")
+        if lat:
+            # 两路召回并行，阶段耗时不等于总耗时；P95 比均值更能反映长尾
+            print(f"   延迟 P50/P95：总 {fmt(lat['p50TotalMs'], False)}/{fmt(lat['p95TotalMs'], False)} ms"
+                  f"  检索 {fmt(lat['p50RetrievalMs'], False)}/{fmt(lat['p95RetrievalMs'], False)} ms"
+                  f"  生成 {fmt(lat['p50GenerationMs'], False)}/{fmt(lat['p95GenerationMs'], False)} ms"
+                  f"  兜底 {lat['fallbackCases']} 题（{fmt(lat['fallbackRate'])}）")
+        cit = s.get("citation")
+        if cit:
+            print(f"   引用 {cit['citationCases']} 题有引用，未引用 {cit['uncitedCases']} 题"
+                  f"  平均 {fmt(cit['meanCitationsPerAnswer'], False)} 条/答"
+                  f"  可溯源率 {fmt(cit['meanTraceability'])}  相关率 {fmt(cit['meanRelevance'])}")
     print()
     print("题型      | " + " | ".join(f"{r['label']:^52}" for r in reports))
     print("          | " + " | ".join(f"{'Recall':>7} {'文件级':>7} {'MRR':>5} {'空':>3} {'准确率':>7} {'均分':>5} {'失败':>3}"

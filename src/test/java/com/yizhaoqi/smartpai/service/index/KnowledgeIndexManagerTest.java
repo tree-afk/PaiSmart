@@ -46,18 +46,34 @@ class KnowledgeIndexManagerTest {
 
     @Test
     void onlyMissingNonVectorFieldsAreAppendedToExistingIndex() throws Exception {
+        // 版本化之前建的线上索引实际字段集合：旧模板有 isPublic，没有版本/构建字段和文件名
         Set<String> oldIndexFields = Set.of("fileMd5", "chunkId", "pageNumber", "anchorText", "textContent",
                 "vector", "modelVersion", "userId", "orgTag", "isPublic");
 
         var missing = manager.missingTemplateFields(oldIndexFields);
 
-        assertEquals(2, missing.size());
-        assertTrue(missing.has("chunkContext"));
-        assertTrue(missing.has("fileName"));
+        Set<String> missingFields = new java.util.HashSet<>();
+        missing.fieldNames().forEachRemaining(missingFields::add);
+        assertEquals(Set.of("documentId", "versionId", "buildId", "versionNo", "buildNo",
+                "docType", "jurisdiction", "jurisdictionCode", "issuer", "applicableInstitutions",
+                "effectiveAt", "expiresAt", "repealed",
+                "articlePath", "clauseNo",
+                "chunkContext", "fileName", "public"), missingFields);
+        assertFalse(missing.has("isPublic"), "公开标记按新契约改名为 public，旧名不再写入模板");
+        assertEquals("boolean", missing.path("public").path("type").asText());
+        assertEquals("keyword", missing.path("docType").path("type").asText(), "合规字段必须显式声明，不能走动态映射");
+        assertEquals("keyword", missing.path("jurisdiction").path("type").asText());
+        assertEquals("keyword", missing.path("jurisdictionCode").path("type").asText());
+        assertEquals("keyword", missing.path("issuer").path("type").asText());
+        assertEquals("keyword", missing.path("applicableInstitutions").path("type").asText());
+        assertEquals("date", missing.path("effectiveAt").path("type").asText());
+        assertEquals("date", missing.path("expiresAt").path("type").asText());
+        assertEquals("boolean", missing.path("repealed").path("type").asText());
+        assertEquals("keyword", missing.path("articlePath").path("type").asText(), "条款路径必须显式声明，不能走动态映射");
+        assertEquals("keyword", missing.path("clauseNo").path("type").asText());
         assertFalse(manager.missingTemplateFields(Set.of()).has("vector"), "vector 维度随模型变化，不追加");
         var afterUpgrade = new java.util.HashSet<>(oldIndexFields);
-        afterUpgrade.add("chunkContext");
-        afterUpgrade.add("fileName");
+        afterUpgrade.addAll(missingFields);
         assertTrue(manager.missingTemplateFields(afterUpgrade).isEmpty(), "重复调用是空操作");
     }
 

@@ -1,0 +1,1637 @@
+{
+  "dataset": "bank-compliance-v1",
+  "generatedAt": "2026-11-06",
+  "asOf": "2026-11-06",
+  "generator": "docs/eval/tools/build_bank_compliance_eval.py",
+  "corpus": {
+    "originals": [
+      "R01",
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R06",
+      "R07",
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12",
+      "R13",
+      "R14"
+    ],
+    "synthetics": [
+      "S01",
+      "S02",
+      "S03",
+      "S04",
+      "S05"
+    ],
+    "note": "R12 已废止、S05 已过失效日期，不作为任何题目的期望文件，只作干扰项留在库中。"
+  },
+  "counts": {
+    "total": 50,
+    "byCategory": {
+      "fact": 12,
+      "multi": 8,
+      "region": 6,
+      "version": 6,
+      "conflict": 5,
+      "noanswer": 6,
+      "clarify": 4,
+      "citation": 3
+    },
+    "byTier": {
+      "原文": 41,
+      "合成": 3,
+      "原文+合成": 6
+    }
+  },
+  "cases": [
+    {
+      "caseId": "fact-01-data-security-event-report",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行保险机构发生数据安全事件后，应在多长时间内向监管机构报告，多长时间内提交正式书面报告？",
+      "referenceAnswer": "依据《银行保险机构数据安全管理办法》第六十九条：数据安全事件发生 2 小时内向国家金融监督管理总局或其派出机构报告，事件发生后 24 小时内提交正式书面报告；处置期间每 2 小时上报进展，处置结束后 5 个工作日内报送评估、总结和改进报告。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "数据安全事件发生2小时内，银行保险机构应当向国家金融监督管理总局或者其派出机构报告",
+          "clause": "第六十九条",
+          "articlePath": "第七章 数据安全风险监测与处置 > 第六十九条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-02-data-security-annual-report",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行保险机构应在每年什么时间前报送上一年度数据安全风险评估报告？",
+      "referenceAnswer": "每年 1 月 15 日前向国家金融监督管理总局或其派出机构报送（《银行保险机构数据安全管理办法》第七十四条）。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "每年1月15日前向国家金融监督管理总局或者其派出机构报送上一年度数据安全风险评估报告",
+          "clause": "第七十四条",
+          "articlePath": "第八章 监督管理 > 第七十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-03-data-security-penalty",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行业金融机构违反《银行保险机构数据安全管理办法》会被处以多大金额的罚款？",
+      "referenceAnswer": "依据第七十七条：责令改正，并处以二十万元以上五十万元以下罚款；情节特别严重或逾期不改正的，可责令停业整顿或吊销经营许可证；对直接负责的董事、高级管理人员和其他直接责任人员可处五万元以上五十万元以下罚款。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "责令银行业金融机构改正，并处以二十万以上五十万以下罚款",
+          "clause": "第七十七条",
+          "articlePath": "第八章 监督管理 > 第七十七条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-04-sales-staff-leave-notice",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "保险销售人员离职后，对其在职期间签订、尚未履行完毕的一年期以上人身保险合同，保险公司应在多长时间内通知投保人？",
+      "referenceAnswer": "依据《保险销售行为管理办法》第三十六条：应在该销售人员离职手续办理完成后的 30 日内，明确通知投保人或被保险人其离职信息、保险合同状况及获得后续服务的途径。",
+      "expectedFiles": [
+        {
+          "docId": "R02",
+          "file": "R02-insurance-sales-2023.md",
+          "title": "保险销售行为管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-03-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R02",
+          "phrase": "在该保险销售人员的离职手续办理完成后的30日内明确通知投保人或者被保险人有关该保险销售人员的离职信息",
+          "clause": "第三十六条",
+          "articlePath": "第四章 保险销售后行为管理 > 第三十六条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-05-consumer-protection-audit-cycle",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行保险机构消费者权益保护内部审计以几年为一个周期？",
+      "referenceAnswer": "依据《银行保险机构消费者权益保护管理办法》第十九条：以 5 年为一个周期，全面覆盖本机构相关部门和一级分支机构。",
+      "expectedFiles": [
+        {
+          "docId": "R03",
+          "file": "R03-consumer-protection-2022.md",
+          "title": "银行保险机构消费者权益保护管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2023-03-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R03",
+          "phrase": "以5年为一个周期全面覆盖本机构相关部门和一级分支机构",
+          "clause": "第十九条",
+          "articlePath": "第二章 工作机制与管理要求 > 第十九条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-06-consumer-protection-fine",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行保险机构严重侵害消费者合法权益，监管机构可对董事会成员和高级管理人员处以多少罚款？",
+      "referenceAnswer": "依据《银行保险机构消费者权益保护管理办法》第五十四条：可给予警告，并处以 10 万元以下罚款；机构层面另有通报批评、警告、10 万元以下罚款等处罚。",
+      "expectedFiles": [
+        {
+          "docId": "R03",
+          "file": "R03-consumer-protection-2022.md",
+          "title": "银行保险机构消费者权益保护管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2023-03-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R03",
+          "phrase": "并处以10万元以下罚款",
+          "clause": "第五十四条",
+          "articlePath": "第七章 监督管理 > 第五十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-07-pbc-complaint-handling-days",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "中国人民银行分支机构收到金融消费者投诉后，应在多少个工作日内作出是否接收投诉等处理？",
+      "referenceAnswer": "依据《中国人民银行金融消费者权益保护实施办法》第四十三条：自收到投诉之日起 7 个工作日内完成登记、决定是否接收并告知投诉人；决定接收的转交被投诉机构或调解组织。",
+      "expectedFiles": [
+        {
+          "docId": "R04",
+          "file": "R04-pbc-consumer-protection-2020.md",
+          "title": "中国人民银行金融消费者权益保护实施办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-11-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R04",
+          "phrase": "应当自收到投诉之日起7个工作日内作出下列处理",
+          "clause": "第四十三条",
+          "articlePath": "第四章 金融消费争议解决 > 第四十三条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-08-pbc-self-assessment-report",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行、支付机构应在每年什么时间前向中国人民银行或其分支机构报送金融消费者权益保护自评估报告？",
+      "referenceAnswer": "依据《中国人民银行金融消费者权益保护实施办法》第五十六条：按年度自评估，并于次年 1 月 31 日前报送。",
+      "expectedFiles": [
+        {
+          "docId": "R04",
+          "file": "R04-pbc-consumer-protection-2020.md",
+          "title": "中国人民银行金融消费者权益保护实施办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-11-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R04",
+          "phrase": "并于次年1月31日前向中国人民银行或其分支机构报送自评估报告",
+          "clause": "第五十六条",
+          "articlePath": "第五章 监督与管理机制 > 第五十六条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-09-internet-insurance-suspend-notice",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "保险机构拟自行停止自营网络平台的互联网保险业务经营，应提前多少个工作日公告？",
+      "referenceAnswer": "依据《互联网保险业务监管办法》第八条：应至少提前 20 个工作日，在官方网站和自营网络平台发布公告；涉及债权债务处置的一并公告。",
+      "expectedFiles": [
+        {
+          "docId": "R05",
+          "file": "R05-internet-insurance-2020.md",
+          "title": "互联网保险业务监管办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2021-02-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R05",
+          "phrase": "应至少提前20个工作日在官方网站和自营网络平台发布公告",
+          "clause": "第八条",
+          "articlePath": "第二章 基本业务规则 > 第八条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-10-internet-insurance-annual-report",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "保险机构应在每年什么时间前报送上一年度互联网保险业务经营情况报告？",
+      "referenceAnswer": "依据《互联网保险业务监管办法》第七十四条：每年 4 月 30 日前报送至互联网保险监管相关信息系统，报告由总经理和互联网保险业务负责人签字。",
+      "expectedFiles": [
+        {
+          "docId": "R05",
+          "file": "R05-internet-insurance-2020.md",
+          "title": "互联网保险业务监管办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2021-02-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R05",
+          "phrase": "保险机构应于每年4月30日前向互联网保险监管相关信息系统报送上一年度互联网保险业务经营情况报告",
+          "clause": "第七十四条",
+          "articlePath": "第四章 监督管理 > 第七十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-11-operational-risk-report-days",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行保险机构应在知悉重大操作风险事件后几个工作日内向监管机构报告？",
+      "referenceAnswer": "依据《银行保险机构操作风险管理办法》第四十二条：在知悉或应当知悉重大操作风险事件后 5 个工作日内，按监管职责归属向国家金融监督管理总局或其派出机构报告。",
+      "expectedFiles": [
+        {
+          "docId": "R06",
+          "file": "R06-operational-risk-2023.md",
+          "title": "银行保险机构操作风险管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-07-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R06",
+          "phrase": "银行保险机构应当在知悉或者应当知悉以下重大操作风险事件5个工作日内",
+          "clause": "第四十二条",
+          "articlePath": "第五章 监督管理 > 第四十二条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "fact-12-complaint-records-retention",
+      "category": "fact",
+      "categoryLabel": "条款事实",
+      "question": "银行、支付机构的投诉资料应自投诉办结之日起至少留存多久？",
+      "referenceAnswer": "依据《中国人民银行金融消费者权益保护实施办法》第四十四条：投诉资料留存时间自投诉办结之日起不得少于 3 年，法律、行政法规另有规定的从其规定。",
+      "expectedFiles": [
+        {
+          "docId": "R04",
+          "file": "R04-pbc-consumer-protection-2020.md",
+          "title": "中国人民银行金融消费者权益保护实施办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-11-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R04",
+          "phrase": "投诉资料留存时间自投诉办结之日起不得少于3年",
+          "clause": "第四十四条",
+          "articlePath": "第四章 金融消费争议解决 > 第四十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-01-incident-report-deadlines",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "银行保险机构发生数据安全事件、重大操作风险事件，分别应在多长时间内向监管机构报告？",
+      "referenceAnswer": "两类事件时限不同：数据安全事件按《银行保险机构数据安全管理办法》第六十九条，2 小时内报告、24 小时内提交正式书面报告；重大操作风险事件按《银行保险机构操作风险管理办法》第四十二条，知悉或应当知悉后 5 个工作日内报告。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R06",
+          "file": "R06-operational-risk-2023.md",
+          "title": "银行保险机构操作风险管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-07-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "数据安全事件发生2小时内，银行保险机构应当向国家金融监督管理总局或者其派出机构报告",
+          "clause": "第六十九条",
+          "articlePath": "第七章 数据安全风险监测与处置 > 第六十九条"
+        },
+        {
+          "docId": "R06",
+          "phrase": "银行保险机构应当在知悉或者应当知悉以下重大操作风险事件5个工作日内",
+          "clause": "第四十二条",
+          "articlePath": "第五章 监督管理 > 第四十二条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-02-recording-retention",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "上海地区人身保险线下“双录”视听资料，与全国互联网保险销售行为可回溯资料，保存期限分别怎么规定？纠纷情况下各自延到什么时候？",
+      "referenceAnswer": "上海通知第六部分要求：自保险合同终止之日起算，保险期间一年及以下不少于五年、超过一年不少于十年；遇投诉、诉讼等纠纷至少保存至纠纷结束后二年。互联网保险可回溯通知第十九条要求：保险期间一年以下不少于五年、超过一年不少于十年；纠纷至少保存至纠纷结束后三年。差异在纠纷后的留存年限：上海 2 年、互联网可回溯 3 年。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R11",
+          "file": "R11-internet-insurance-recording-2020.md",
+          "title": "中国银保监会关于规范互联网保险销售行为可回溯管理的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-10-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "保险期间在一年及以下的不得少于五年，保险期间超过一年的不得少于十年",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "R11",
+          "phrase": "遇消费者投诉、法律诉讼等纠纷的，应当至少保存至纠纷结束后三年",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-03-internet-loan-cooperation",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "商业银行与合作机构共同出资发放互联网贷款，单笔贷款合作方出资比例下限是多少？重庆辖内的机构还要满足哪些额外要求？",
+      "referenceAnswer": "出资比例下限见《中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知》第二条：单笔贷款中合作方出资比例不得低于 30%。重庆金融监管局《关于进一步加强辖内银行业金融机构互联网贷款业务风险管理的通知》（渝金管规〔2026〕2号）对辖内机构另提出八方面要求：一、切实转变经营导向，将互联网助贷、联合贷及第三方平台获客贷款统一纳入全行风险偏好、资本约束和年度信贷计划，不得作为弥补线下投放不足、维持短期营收或扩大客户数量的工具；二、提升自主获客能力，减少对互联网平台的路径依赖，健全自主获客、自主风控和贷后管理体系；三、强化业务风险管理，多维数据交叉验证，识别多头共债和过度负债，不得因担保、增信放松客户准入，加强风险模型全生命周期管理；四、强化合作机构管理，审慎制定准入标准，合理设置担保增信类业务规模和集中度限额，完善退出机制，服务费合理定价；五、强化还款资金管理，防范平台截留、挪用还款资金，防止形成资金池；六、提高贷后管理主动性，及时修订合作协议，排查合作机构催收行为合规性；七、强化宣传教育引导，明示个人贷款综合融资成本，畅通投诉渠道，不得直接将投诉纠纷转合作方处理；八、加强监督检查问责，主动自查自纠，自通知印发之日起三个月内向我局报送专项排查报告。",
+      "expectedFiles": [
+        {
+          "docId": "R09",
+          "file": "R09-internet-loan-2021.md",
+          "title": "中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2022-01-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R14",
+          "file": "R14-chongqing-internet-loan-2026.md",
+          "title": "重庆金融监管局关于进一步加强辖内银行业金融机构互联网贷款业务风险管理的通知",
+          "jurisdiction": "重庆",
+          "docType": "监管规定",
+          "effectiveAt": "2026-09-18",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R09",
+          "phrase": "单笔贷款中合作方出资比例不得低于30%",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "R14",
+          "phrase": "自通知印发之日起三个月内向我局报送专项排查报告",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-04-staff-notice-and-annual-report",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "保险销售人员离职的通知义务，与互联网保险业务经营情况年度报告，分别有哪些时限要求？",
+      "referenceAnswer": "《保险销售行为管理办法》第三十六条：离职手续办理完成后 30 日内通知投保人或被保险人；《互联网保险业务监管办法》第七十四条：每年 4 月 30 日前报送上一年度互联网保险业务经营情况报告。",
+      "expectedFiles": [
+        {
+          "docId": "R02",
+          "file": "R02-insurance-sales-2023.md",
+          "title": "保险销售行为管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-03-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R05",
+          "file": "R05-internet-insurance-2020.md",
+          "title": "互联网保险业务监管办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2021-02-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R02",
+          "phrase": "在该保险销售人员的离职手续办理完成后的30日内明确通知投保人或者被保险人",
+          "clause": "第三十六条",
+          "articlePath": "第四章 保险销售后行为管理 > 第三十六条"
+        },
+        {
+          "docId": "R05",
+          "phrase": "每年4月30日前向互联网保险监管相关信息系统报送上一年度互联网保险业务经营情况报告",
+          "clause": "第七十四条",
+          "articlePath": "第四章 监督管理 > 第七十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-05-audit-cycle-and-complaint",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "消费者权益保护内部审计周期，与中国人民银行分支机构转交投诉的处理时限，分别是多少？",
+      "referenceAnswer": "《银行保险机构消费者权益保护管理办法》第十九条：内部审计以 5 年为一个周期全面覆盖；《中国人民银行金融消费者权益保护实施办法》第四十三条：人民银行分支机构 7 个工作日内作出处理，银行、支付机构收到转交投诉后 15 日内答复，最长不超过 60 日。",
+      "expectedFiles": [
+        {
+          "docId": "R03",
+          "file": "R03-consumer-protection-2022.md",
+          "title": "银行保险机构消费者权益保护管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2023-03-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R04",
+          "file": "R04-pbc-consumer-protection-2020.md",
+          "title": "中国人民银行金融消费者权益保护实施办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-11-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R03",
+          "phrase": "以5年为一个周期全面覆盖本机构相关部门和一级分支机构",
+          "clause": "第十九条",
+          "articlePath": "第二章 工作机制与管理要求 > 第十九条"
+        },
+        {
+          "docId": "R04",
+          "phrase": "应当自收到投诉之日起7个工作日内作出下列处理",
+          "clause": "第四十三条",
+          "articlePath": "第四章 金融消费争议解决 > 第四十三条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-06-rectification-deadlines",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "操作风险管理办法对不同规模机构的执行期限怎么安排？互联网保险办法的整改期限又是多久？",
+      "referenceAnswer": "《银行保险机构操作风险管理办法》第五十条：关于第二、三、四章的规定，规模较大的保险机构自施行之日起 1 年内执行，规模较小的银行保险机构 2 年内执行。《互联网保险业务监管办法》第八十一条：施行之日起 3 个月内完成制度建设和营销宣传、销售管理、信息披露等问题整改，6 个月内完成业务和经营等其他问题整改，12 个月内完成自营网络平台网络安全等级保护认证。",
+      "expectedFiles": [
+        {
+          "docId": "R06",
+          "file": "R06-operational-risk-2023.md",
+          "title": "银行保险机构操作风险管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-07-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R05",
+          "file": "R05-internet-insurance-2020.md",
+          "title": "互联网保险业务监管办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2021-02-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R06",
+          "phrase": "规模较大的保险机构自本办法施行之日起1年内执行",
+          "clause": "第五十条",
+          "articlePath": "第六章 附 则 > 第五十条"
+        },
+        {
+          "docId": "R05",
+          "phrase": "3个月内完成制度建设、营销宣传、销售管理、信息披露等问题整改",
+          "clause": "第八十一条",
+          "articlePath": "第五章 附则 > 第八十一条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-07-quality-check-ratio-two-regions",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "上海和新疆对人身保险“双录”的质检抽查比例分别有什么要求？",
+      "referenceAnswer": "上海通知第四部分：对全部成交件视听资料按每月不低于 30% 的比例在犹豫期内全程质检。新疆通知第四部分：每月质检抽样比例不得低于当月承保的应录音录像保单件数的 30%，其中投保人为特殊人群的保单每月质检覆盖率不得低于 60%，销售投连险产品或 60 周岁（含）以上投保人的“双录”视听资料应 100% 质检。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R13",
+          "file": "R13-xinjiang-sales-recording-2026.md",
+          "title": "新疆金融监管局关于进一步加强人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "新疆",
+          "docType": "监管规定",
+          "effectiveAt": "2026-02-06",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "按每月不低于30%的比例在犹豫期内全程质检",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "R13",
+          "phrase": "针对投保人为特殊人群的录音录像保单，每月质检覆盖率不得低于60%",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "multi-08-medical-account-and-complaint",
+      "category": "multi",
+      "categoryLabel": "跨文档综合",
+      "question": "上海医保个人账户购买商业健康保险时退保金应退到哪里？央行对投诉资料留存有什么要求？",
+      "referenceAnswer": "《上海市医保个人账户购买商业健康保险业务管理办法》第十一条：使用医保个人账户结余资金购买并退保的，退保金必须退回投保人本人的医保个人账户。《中国人民银行金融消费者权益保护实施办法》第四十四条：投诉资料留存时间自投诉办结之日起不得少于 3 年。",
+      "expectedFiles": [
+        {
+          "docId": "R08",
+          "file": "R08-shanghai-medical-insurance-2022.md",
+          "title": "上海市医保个人账户购买商业健康保险业务管理办法",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2022-11-18",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "R04",
+          "file": "R04-pbc-consumer-protection-2020.md",
+          "title": "中国人民银行金融消费者权益保护实施办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2020-11-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R08",
+          "phrase": "退保金必须退回投保人本人的医保个人账户",
+          "clause": "第十一条",
+          "articlePath": "第四章 业务管理 > 第十一条"
+        },
+        {
+          "docId": "R04",
+          "phrase": "投诉资料留存时间自投诉办结之日起不得少于3年",
+          "clause": "第四十四条",
+          "articlePath": "第四章 金融消费争议解决 > 第四十四条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-01-shanghai-recording-scope",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "上海地区人身保险销售“双录”的可回溯要求，适用于哪些销售渠道？哪些渠道被排除？",
+      "referenceAnswer": "适用《上海银保监局关于深入推进人身保险销售行为可回溯管理的通知》第一部分：除电话销售业务和互联网保险业务外，在上海地区销售人身保险产品的保险公司和保险中介机构，向自然人销售保险期间超过一年（含不超过一年但保证续保）的产品应实施“双录”；团体保险及职工医保个人账户购买商业健康保险等政策性保险产品除外。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "除电话销售业务和互联网保险业务外，在上海地区销售人身保险产品的保险公司和保险中介机构",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-02-shanghai-identity-verification",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "上海医保个人账户购买商业健康保险，保险公司应如何验证投保行为？",
+      "referenceAnswer": "依据《上海市医保个人账户购买商业健康保险业务管理办法》第九条：应采取有效手段对投保人身份进行验证，确保投保行为系医保个人账户持有人本人的真实意愿。",
+      "expectedFiles": [
+        {
+          "docId": "R08",
+          "file": "R08-shanghai-medical-insurance-2022.md",
+          "title": "上海市医保个人账户购买商业健康保险业务管理办法",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2022-11-18",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R08",
+          "phrase": "确保投保行为系医保个人账户持有人本人的真实意愿",
+          "clause": "第九条",
+          "articlePath": "第四章 业务管理 > 第九条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-03-shanghai-policy-loan",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "上海医保个人账户购买商业健康保险，能否办理保单贷款？",
+      "referenceAnswer": "不能。依据《上海市医保个人账户购买商业健康保险业务管理办法》第十三条：保险公司不得提供医保个人账户购买商业健康保险产品的保单贷款服务。",
+      "expectedFiles": [
+        {
+          "docId": "R08",
+          "file": "R08-shanghai-medical-insurance-2022.md",
+          "title": "上海市医保个人账户购买商业健康保险业务管理办法",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2022-11-18",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R08",
+          "phrase": "保险公司不得提供医保个人账户购买商业健康保险产品的保单贷款服务",
+          "clause": "第十三条",
+          "articlePath": "第四章 业务管理 > 第十三条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-04-xinjiang-special-group-qc",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "新疆对特殊人群“双录”保单的质检覆盖率有什么特别要求？",
+      "referenceAnswer": "依据新疆通知第四部分：每月质检抽样比例不得低于当月承保的应录音录像保单件数的 30%；针对投保人为特殊人群的录音录像保单，每月质检覆盖率不得低于 60%，且质检应在犹豫期内完成。",
+      "expectedFiles": [
+        {
+          "docId": "R13",
+          "file": "R13-xinjiang-sales-recording-2026.md",
+          "title": "新疆金融监管局关于进一步加强人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "新疆",
+          "docType": "监管规定",
+          "effectiveAt": "2026-02-06",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R13",
+          "phrase": "针对投保人为特殊人群的录音录像保单，每月质检覆盖率不得低于60%",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-05-chongqing-special-report",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "重庆辖内银行业金融机构应在多长时间内向重庆金融监管局报送专项排查报告？",
+      "referenceAnswer": "依据重庆金融监管局通知第八条：自通知印发之日起三个月内报送专项排查报告。",
+      "expectedFiles": [
+        {
+          "docId": "R14",
+          "file": "R14-chongqing-internet-loan-2026.md",
+          "title": "重庆金融监管局关于进一步加强辖内银行业金融机构互联网贷款业务风险管理的通知",
+          "jurisdiction": "重庆",
+          "docType": "监管规定",
+          "effectiveAt": "2026-09-18",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R14",
+          "phrase": "自通知印发之日起三个月内向我局报送专项排查报告",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "region-06-xinjiang-agent-feedback",
+      "category": "region",
+      "categoryLabel": "地区适用",
+      "question": "新疆辖内银行类保险兼业代理机构自行质检后，应在多长时间内向合作保险公司反馈质检结果？",
+      "referenceAnswer": "依据新疆通知第四部分：银行类保险兼业代理机构自存视听资料且未向保险公司提供的，应自行开展质检，并在质检完成后的 10 个工作日内将全部质检结果书面反馈至合作的保险公司。",
+      "expectedFiles": [
+        {
+          "docId": "R13",
+          "file": "R13-xinjiang-sales-recording-2026.md",
+          "title": "新疆金融监管局关于进一步加强人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "新疆",
+          "docType": "监管规定",
+          "effectiveAt": "2026-02-06",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R13",
+          "phrase": "并在质检完成后的10个工作日内，将全部质检结果书面反馈至合作的保险公司",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-01-internet-insurance-effective",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "现行《互联网保险业务监管办法》何时施行？它废止了哪部旧办法？",
+      "referenceAnswer": "《互联网保险业务监管办法》第八十二条：自 2021 年 2 月 1 日起施行，《互联网保险业务监管暂行办法》（保监发〔2015〕69 号）同时废止。因此 2015 年暂行办法已不可作为现行依据。",
+      "expectedFiles": [
+        {
+          "docId": "R05",
+          "file": "R05-internet-insurance-2020.md",
+          "title": "互联网保险业务监管办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2021-02-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R05",
+          "phrase": "本办法自2021年2月1日起施行，《互联网保险业务监管暂行办法》（保监发〔2015〕69号）同时废止",
+          "clause": "第八十二条",
+          "articlePath": "第五章 附则 > 第八十二条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-02-internet-loan-effective",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "互联网贷款合作方出资比例不低于 30%、以及跨地域经营的要求，从什么时间开始执行？",
+      "referenceAnswer": "依据《中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知》第六条：第二条（出资比例不低于 30%）和第五条（地方法人银行不得跨注册地辖区开展业务）自 2022 年 1 月 1 日起执行，存量业务自然结清。",
+      "expectedFiles": [
+        {
+          "docId": "R09",
+          "file": "R09-internet-loan-2021.md",
+          "title": "中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2022-01-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R09",
+          "phrase": "本通知第二条、第五条自2022年1月1日起执行",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-03-internet-loan-transition",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "商业银行互联网贷款的存量业务过渡期截止到什么时候？",
+      "referenceAnswer": "依据 2022 年《关于加强商业银行互联网贷款业务管理 提升金融服务质效的通知》第八条：存量业务过渡期至 2023 年 6 月 30 日；过渡期内新增业务应符合《办法》《互联网贷款通知》和本通知要求。",
+      "expectedFiles": [
+        {
+          "docId": "R10",
+          "file": "R10-internet-loan-2022.md",
+          "title": "中国银保监会关于加强商业银行互联网贷款业务管理提升金融服务质效的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2022-07-15",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R10",
+          "phrase": "商业银行互联网贷款存量业务过渡期至2023年6月30日",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-04-operational-risk-execution",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "《银行保险机构操作风险管理办法》对规模较大和规模较小的机构分别规定了多长的执行期限？",
+      "referenceAnswer": "依据第五十条：第二、三、四章的规定，规模较大的保险机构自本办法施行之日起 1 年内执行，规模较小的银行保险机构自施行之日起 2 年内执行。",
+      "expectedFiles": [
+        {
+          "docId": "R06",
+          "file": "R06-operational-risk-2023.md",
+          "title": "银行保险机构操作风险管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-07-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R06",
+          "phrase": "规模较大的保险机构自本办法施行之日起1年内执行",
+          "clause": "第五十条",
+          "articlePath": "第六章 附 则 > 第五十条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-05-shanghai-recording-phases",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "上海人身保险销售行为可回溯管理从什么时候正式实施？过渡期怎么安排？",
+      "referenceAnswer": "依据上海通知第十部分：第一阶段 2021 年 1 月 1 日至 2021 年 3 月 31 日为实施过渡期，各机构选择至少一类在售产品试点；第二阶段 2021 年 4 月 1 日开始正式实施，纳入日常监管。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "第二阶段：2021年4月1日开始，正式实施",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "version-06-critical-illness-version",
+      "category": "version",
+      "categoryLabel": "版本/当前可检索",
+      "question": "演示安康重大疾病保险 2025 版的等待期和犹豫期是多少天？现在能按 2025 版回答吗？",
+      "referenceAnswer": "知识库中 2025 版条款已过失效日期（2026 年 1 月 1 日停止适用），不可检索，因此无法确认其等待期、犹豫期的具体天数。现行 2026 版（2026 年 1 月 1 日起适用）第四条为等待期 90 日、第八条为犹豫期 15 日。",
+      "expectedFiles": [
+        {
+          "docId": "S04",
+          "file": "S04-product-critical-illness-2026-demo.md",
+          "title": "演示安康重大疾病保险产品条款（2026版）",
+          "jurisdiction": "全国",
+          "docType": "PRODUCT_TERMS",
+          "effectiveAt": "2026-01-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "S04",
+          "phrase": "自本合同生效之日起90日为等待期",
+          "clause": "第四条",
+          "articlePath": "第四条"
+        }
+      ],
+      "tier": "合成",
+      "note": ""
+    },
+    {
+      "caseId": "conflict-01-data-security-event-deadline",
+      "category": "conflict",
+      "categoryLabel": "冲突条款",
+      "question": "本行数据安全管理办法规定数据安全事件 4 小时内报告、48 小时内提交书面报告，这与监管规定一致吗？",
+      "referenceAnswer": "不一致。《银行保险机构数据安全管理办法》第六十九条要求 2 小时内报告、24 小时内提交正式书面报告、每 2 小时上报进展；本行制度（S01 第七条、第八条）的 4 小时／48 小时低于监管要求，应以监管规定为准并修订内部制度。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "S01",
+          "file": "S01-internal-data-security-demo.md",
+          "title": "演示银行数据安全管理办法（内部制度）",
+          "jurisdiction": "全国",
+          "docType": "INTERNAL_POLICY",
+          "effectiveAt": "2026-05-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "数据安全事件发生2小时内，银行保险机构应当向国家金融监督管理总局或者其派出机构报告",
+          "clause": "第六十九条",
+          "articlePath": "第七章 数据安全风险监测与处置 > 第六十九条"
+        },
+        {
+          "docId": "S01",
+          "phrase": "本行应当在4小时内向国家金融监督管理总局及其派出机构报告",
+          "clause": "第七条",
+          "articlePath": "第七条"
+        }
+      ],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "conflict-02-quality-check-ratio",
+      "category": "conflict",
+      "categoryLabel": "冲突条款",
+      "question": "本行上海分行细则规定双录音视频每月质检不低于 10%，上海监管要求是多少？该细则合规吗？",
+      "referenceAnswer": "不合规。上海通知第四部分第（一）项要求对全部成交件视听资料按每月不低于 30% 的比例在犹豫期内全程质检；本行上海分行细则（S02 第五条）只要求每月不低于 10%，低于监管要求，应修订。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "S02",
+          "file": "S02-internal-shanghai-sales-recording-demo.md",
+          "title": "演示银行上海分行人身保险销售可回溯管理细则（内部制度）",
+          "jurisdiction": "上海",
+          "docType": "INTERNAL_POLICY",
+          "effectiveAt": "2026-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "按每月不低于30%的比例在犹豫期内全程质检",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "S02",
+          "phrase": "按每月不低于10%的比例在犹豫期内全程质检",
+          "clause": "第五条",
+          "articlePath": "第五条"
+        }
+      ],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "conflict-03-rectification-deadline",
+      "category": "conflict",
+      "categoryLabel": "冲突条款",
+      "question": "本行上海分行细则规定质检问题 20 个工作日内整改，上海监管要求是多久？",
+      "referenceAnswer": "上海通知第四部分第（二）项要求自发现问题之日起 15 个工作日内整改；本行上海分行细则（S02 第六条）规定 20 个工作日内完成整改，长于监管要求，应以监管要求为准并修订。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "S02",
+          "file": "S02-internal-shanghai-sales-recording-demo.md",
+          "title": "演示银行上海分行人身保险销售可回溯管理细则（内部制度）",
+          "jurisdiction": "上海",
+          "docType": "INTERNAL_POLICY",
+          "effectiveAt": "2026-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "应当自发现问题之日起15个工作日内整改",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "S02",
+          "phrase": "自发现问题之日起20个工作日内完成整改",
+          "clause": "第六条",
+          "articlePath": "第六条"
+        }
+      ],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "conflict-04-cooperation-funding-ratio",
+      "category": "conflict",
+      "categoryLabel": "冲突条款",
+      "question": "本行重庆分行细则规定合作方出资比例不得低于 20%，与全国监管要求是否一致？",
+      "referenceAnswer": "不一致。《中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知》第二条要求单笔贷款中合作方出资比例不得低于 30%；本行重庆分行细则（S03 第四条）规定 20%，低于监管下限，应修订。",
+      "expectedFiles": [
+        {
+          "docId": "R09",
+          "file": "R09-internet-loan-2021.md",
+          "title": "中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2022-01-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "S03",
+          "file": "S03-internal-chongqing-internet-loan-demo.md",
+          "title": "演示银行重庆分行互联网贷款合作机构管理细则（内部制度）",
+          "jurisdiction": "重庆",
+          "docType": "INTERNAL_POLICY",
+          "effectiveAt": "2026-06-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R09",
+          "phrase": "单笔贷款中合作方出资比例不得低于30%",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "S03",
+          "phrase": "单笔贷款中合作方出资比例不得低于20%",
+          "clause": "第四条",
+          "articlePath": "第四条"
+        }
+      ],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "conflict-05-concentration-limits",
+      "category": "conflict",
+      "categoryLabel": "冲突条款",
+      "question": "本行重庆分行细则规定单一合作方集中度 35%、全部合作机构 60%，与全国监管要求相比如何？",
+      "referenceAnswer": "两个指标都突破了监管上限。《中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知》第三条：与单一合作方（含其关联方）发放的本行贷款余额不得超过本行一级资本净额的 25%；第四条：与全部合作机构共同出资发放的贷款余额不得超过本行全部贷款余额的 50%。本行细则（S03 第五、六条）为 35% 和 60%，均应修订。",
+      "expectedFiles": [
+        {
+          "docId": "R09",
+          "file": "R09-internet-loan-2021.md",
+          "title": "中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2022-01-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        },
+        {
+          "docId": "S03",
+          "file": "S03-internal-chongqing-internet-loan-demo.md",
+          "title": "演示银行重庆分行互联网贷款合作机构管理细则（内部制度）",
+          "jurisdiction": "重庆",
+          "docType": "INTERNAL_POLICY",
+          "effectiveAt": "2026-06-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R09",
+          "phrase": "与单一合作方（含其关联方）发放的本行贷款余额不得超过本行一级资本净额的25%",
+          "clause": "全文",
+          "articlePath": "全文"
+        },
+        {
+          "docId": "S03",
+          "phrase": "不得超过本行一级资本净额的35%",
+          "clause": "第五条",
+          "articlePath": "第五条"
+        }
+      ],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-01-it-outsourcing-rule",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "《银行保险机构信息科技外包风险监管办法》（银保监办发〔2022〕118 号）对信息科技外包提出了哪些具体要求？",
+      "referenceAnswer": "知识库未收录该办法，无法回答其具体要求。现有语料只覆盖数据安全、操作风险、消费者权益保护、互联网保险与互联网贷款等办法，不能据此推断信息科技外包的规定。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-02-guarantee-fee-cap",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "商业银行互联网贷款合作机构收取的担保费率上限是多少？",
+      "referenceAnswer": "知识库没有规定担保费率上限。《中国银保监会办公厅关于进一步规范商业银行互联网贷款业务的通知》只规定出资比例与集中度；重庆通知要求支付服务费合理定价、质价相符，但未给出费率上限。因此无法确认具体数值。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-03-xinjiang-internet-loan",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "新疆地区对商业银行互联网贷款合作方出资比例有什么地方性要求？",
+      "referenceAnswer": "知识库中没有新疆地区互联网贷款的规定。新疆语料仅涉及人身保险销售行为可回溯管理，出资比例要求只能引用全国性文件（不得低于 30%），不能据此认为新疆另有更严格或更宽松的地方标准。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-04-tax-deferred-pension",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "个人税收递延型养老保险的税前扣除限额是多少？",
+      "referenceAnswer": "知识库未收录该险种的税收政策，无法回答扣除限额。语料中只在可回溯管理的适用范围里提到该险种属于除外情形，不涉及税收扣除标准。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-05-2027-budget",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "本行 2027 年度合规培训预算是多少？",
+      "referenceAnswer": "知识库没有该预算信息，无法回答。内部制度类语料只覆盖数据安全事件报告、销售可回溯、互联网贷款合作机构管理等条款，不含年度预算。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "noanswer-06-critical-illness-disease-list",
+      "category": "noanswer",
+      "categoryLabel": "无答案/应拒答",
+      "question": "演示安康重大疾病保险 2026 版具体承保哪些重大疾病？请列出病种清单。",
+      "referenceAnswer": "知识库无法列明病种清单。条款第三条只说明保险责任包括重大疾病保险金、轻症疾病保险金和身故保险金，具体疾病定义以条款释义为准，语料未提供释义或病种清单。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "合成",
+      "note": ""
+    },
+    {
+      "caseId": "clarify-01-quality-check-ratio",
+      "category": "clarify",
+      "categoryLabel": "缺用户条件/应澄清",
+      "question": "双录的质检比例是多少？",
+      "referenceAnswer": "需要先确认地区和业务类型：上海地区线下人身保险按每月不低于 30% 全程质检；新疆为每月不低于 30%，特殊人群保单 60%、投连险或 60 周岁以上投保人 100%；互联网保险销售行为可回溯适用另一套规定。缺条件时不应直接给单一结论。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "clarify-02-waiting-period",
+      "category": "clarify",
+      "categoryLabel": "缺用户条件/应澄清",
+      "question": "等待期是多少天？",
+      "referenceAnswer": "需要先确认产品和版本。演示安康重大疾病保险现行 2026 版等待期为 90 日；2025 版已停止适用且不可检索，不能凭 2026 版推断其数值。健康保险产品的观察期起算与影响另有展示要求。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "合成",
+      "note": "",
+      "expectedBehavior": "clarify_first"
+    },
+    {
+      "caseId": "clarify-03-complaint-deadline",
+      "category": "clarify",
+      "categoryLabel": "缺用户条件/应澄清",
+      "question": "投诉要在多长时间内处理完？",
+      "referenceAnswer": "需要先确认投诉渠道和主体：中国人民银行分支机构 7 个工作日内作出处理决定，银行、支付机构收到转交投诉后 15 日内答复、最长不超过 60 日；保险机构自有渠道的投诉处理时限另有规定。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "clarify-04-funding-ratio",
+      "category": "clarify",
+      "categoryLabel": "缺用户条件/应澄清",
+      "question": "出资比例的下限是多少？",
+      "referenceAnswer": "需要先确认是全国监管要求还是本行内部制度：全国性互联网贷款要求单笔贷款中合作方出资比例不得低于 30%；本行重庆分行内部细则为 20%，低于监管下限。混用两个口径会得出错误结论。",
+      "expectedFiles": [],
+      "evidence": [],
+      "tier": "原文+合成",
+      "note": ""
+    },
+    {
+      "caseId": "citation-01-data-security-event-clause",
+      "category": "citation",
+      "categoryLabel": "条款引用",
+      "question": "《银行保险机构数据安全管理办法》里数据安全事件报告时限规定在哪一条？请给出条款号并复述要求。",
+      "referenceAnswer": "第六十九条：数据安全事件发生 2 小时内向国家金融监督管理总局或其派出机构报告，24 小时内提交正式书面报告，处置期间每 2 小时上报进展。",
+      "expectedFiles": [
+        {
+          "docId": "R01",
+          "file": "R01-data-security-2024.md",
+          "title": "银行保险机构数据安全管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-12-27",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R01",
+          "phrase": "数据安全事件发生2小时内，银行保险机构应当向国家金融监督管理总局或者其派出机构报告",
+          "clause": "第六十九条",
+          "articlePath": "第七章 数据安全风险监测与处置 > 第六十九条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "citation-02-shanghai-qc-clause",
+      "category": "citation",
+      "categoryLabel": "条款引用",
+      "question": "上海通知里“每月不低于 30% 质检”的要求位于第几部分第几项？",
+      "referenceAnswer": "位于第四部分“质检要求”第（一）项：对符合本通知要求的全部成交件视听资料按每月不低于 30% 的比例在犹豫期内全程质检。该文件按部分—项编排，没有条款号。",
+      "expectedFiles": [
+        {
+          "docId": "R07",
+          "file": "R07-shanghai-sales-recording-2020.md",
+          "title": "上海银保监局关于深入推进人身保险销售行为可回溯管理的通知",
+          "jurisdiction": "上海",
+          "docType": "监管规定",
+          "effectiveAt": "2021-04-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R07",
+          "phrase": "按每月不低于30%的比例在犹豫期内全程质检",
+          "clause": "全文",
+          "articlePath": "全文"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    },
+    {
+      "caseId": "citation-03-operational-risk-clause",
+      "category": "citation",
+      "categoryLabel": "条款引用",
+      "question": "《银行保险机构操作风险管理办法》中重大操作风险事件的报告时限规定在第几条？",
+      "referenceAnswer": "第四十二条：在知悉或者应当知悉重大操作风险事件 5 个工作日内，按监管职责归属向国家金融监督管理总局或其派出机构报告。",
+      "expectedFiles": [
+        {
+          "docId": "R06",
+          "file": "R06-operational-risk-2023.md",
+          "title": "银行保险机构操作风险管理办法",
+          "jurisdiction": "全国",
+          "docType": "监管规定",
+          "effectiveAt": "2024-07-01",
+          "expiresAt": null,
+          "repealed": false,
+          "validity": "当前可检索",
+          "retrievable": true
+        }
+      ],
+      "evidence": [
+        {
+          "docId": "R06",
+          "phrase": "银行保险机构应当在知悉或者应当知悉以下重大操作风险事件5个工作日内",
+          "clause": "第四十二条",
+          "articlePath": "第五章 监督管理 > 第四十二条"
+        }
+      ],
+      "tier": "原文",
+      "note": ""
+    }
+  ]
+}

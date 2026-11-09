@@ -340,11 +340,19 @@ declare namespace Api {
     }
 
     interface Form {
-      orgTag: string | null;
-      orgTagName: string | null;
-      uploadMaxSizeBytes?: number | null;
-      uploadMaxSizeMb?: number | null;
-      isPublic: boolean;
+      documentId?: string | null;
+      /** 合规元数据：监管规定/内部制度/产品条款/操作指引，持久化为枚举名 */
+      docType: string | null;
+      jurisdiction: string | null;
+      issuer: string | null;
+      /** 资料适用机构/主体；与发布机构分开 */
+      applicableInstitutions: string | null;
+      /** 生效日期，格式 yyyy-MM-dd；留空表示效力待确认 */
+      effectiveAt: string | null;
+      /** 失效日期，格式 yyyy-MM-dd；留空表示未标注失效 */
+      expiresAt: string | null;
+      /** 是否已废止 */
+      repealed: boolean;
       fileList: import('naive-ui').UploadFileInfo[];
     }
 
@@ -373,10 +381,44 @@ declare namespace Api {
       createdAt?: string;
       mergedAt?: string;
       requestIds?: string[]; // 请求ID，用于取消上传
+      /** 最新内容版本的业务文档标识；旧文件（legacy）为空 */
+      documentId?: string | null;
+      versionId?: string | null;
+      versionNo?: number | null;
+      /** 最新内容版本的合规元数据；旧文件（legacy）为空 */
+      docType?: string | null;
+      jurisdiction?: string | null;
+      /** 归一化地区编码：NATIONAL/北京/上海 */
+      jurisdictionCode?: string | null;
+      issuer?: string | null;
+      applicableInstitutions?: string | null;
+      /** 生效日期，格式 yyyy-MM-dd */
+      effectiveAt?: string | null;
+      /** 失效日期，格式 yyyy-MM-dd */
+      expiresAt?: string | null;
+      repealed?: boolean | null;
+      /** 派生效力状态：UNCONFIRMED/PENDING/EFFECTIVE/EXPIRED/REPEALED */
+      validityStatus?: string | null;
+      validityLabel?: string | null;
+      /** 发布状态：DRAFT/PUBLISHED/WITHDRAWN */
+      publicationStatus?: 'DRAFT' | 'PUBLISHED' | 'WITHDRAWN' | null;
+      metadataRevisionPending?: boolean | null;
     }
     type List = Common.PaginatingQueryRecord<UploadTask>;
 
-    type Merge = Pick<UploadTask, 'fileMd5' | 'fileName'>;
+    type Merge = Pick<
+      UploadTask,
+      | 'fileMd5'
+      | 'fileName'
+      | 'documentId'
+      | 'docType'
+      | 'jurisdiction'
+      | 'issuer'
+      | 'applicableInstitutions'
+      | 'effectiveAt'
+      | 'expiresAt'
+      | 'repealed'
+    >;
 
     interface Progress {
       uploaded: number[];
@@ -397,6 +439,9 @@ declare namespace Api {
     interface ReferenceEvidence {
       fileMd5: string;
       fileName: string;
+      /** 引用对应的业务文档/内容版本；旧引用映射可能为空 */
+      documentId?: string | null;
+      versionId?: string | null;
       pageNumber?: number | null;
       anchorText?: string | null;
       /**
@@ -424,6 +469,10 @@ declare namespace Api {
       /** 引用事后校验结论，未开启校验时为空；SUSPICIOUS 表示片段无法支撑引用它的句子 */
       citationStatus?: 'SUPPORTED' | 'SUSPICIOUS' | null;
       citationReason?: string | null;
+      /** 条款路径，如「第三章 风险管理 > 第十二条」；非合规资料为空 */
+      articlePath?: string | null;
+      /** 条款号，如「第十二条」或「第十二条第二款」；非合规资料为空 */
+      clauseNo?: string | null;
     }
 
     interface Input {

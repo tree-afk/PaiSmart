@@ -163,6 +163,16 @@ public class RagEvalService {
      */
     public synchronized RunStatus start(List<EvalCase> cases, String datasetSource, Integer topK, String label,
                                         String searchUserId, String operator, boolean retrievalOnly) {
+        return start(cases, datasetSource, topK, label, searchUserId, operator, retrievalOnly, false);
+    }
+
+    /**
+     * @param retrievalOnly 只跑检索、只统计检索指标（不生成、不评委打分）
+     * @param planQuestions 检索前让模型判断要不要拆子问题；关闭时按原问题检索，同一数据集两次跑可以对比拆分前后的指标
+     */
+    public synchronized RunStatus start(List<EvalCase> cases, String datasetSource, Integer topK, String label,
+                                        String searchUserId, String operator, boolean retrievalOnly,
+                                        boolean planQuestions) {
         RunProgress running = latest;
         if (running != null && running.state == RunState.RUNNING) {
             throw new CustomException("已有评测任务在运行: " + running.runId, HttpStatus.CONFLICT);
@@ -178,6 +188,7 @@ public class RagEvalService {
         String runId = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         RunProgress progress = new RunProgress(runId, sanitizeLabel(label), datasetSource, k, cases.size(), operator);
         progress.retrievalOnly = retrievalOnly;
+        progress.planQuestions = planQuestions;
         latest = progress;
         remember(progress);
         HumanReviewSampler sampler = HumanReviewSampler.of(properties.getHumanReviewSampleRate(), properties.getRandomSeed());
@@ -258,13 +269,13 @@ public class RagEvalService {
         try {
             List<EvalCaseResult> results = new ArrayList<>(cases.size());
             for (EvalCase evalCase : cases) {
-                results.add(progress.retrievalOnly
-                        ? caseRunner.run(evalCase, searchUserId, progress.topK, sampler, true)
-                        : caseRunner.run(evalCase, searchUserId, progress.topK, sampler));
+                results.add(caseRunner.run(evalCase, searchUserId, progress.topK, sampler,
+                        progress.retrievalOnly, progress.planQuestions));
                 progress.completedCases = results.size();
             }
             EvalReport report = new EvalReport(progress.runId, progress.label, progress.datasetSource, progress.topK,
-                    progress.startedAt, Instant.now(), configSnapshot(progress.topK, progress.retrievalOnly),
+                    progress.startedAt, Instant.now(),
+                    configSnapshot(progress.topK, progress.retrievalOnly, progress.planQuestions),
                     EvalReportAggregator.summarize(results), EvalReportAggregator.diagnosisGuide(), List.copyOf(results));
             Path reportPath = writeReport(report);
             progress.succeed(report.summary(), reportPath.toString());
@@ -285,10 +296,11 @@ public class RagEvalService {
         return file;
     }
 
-    private Map<String, Object> configSnapshot(int topK, boolean retrievalOnly) {
+    private Map<String, Object> configSnapshot(int topK, boolean retrievalOnly, boolean planQuestions) {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("topK", topK);
         config.put("retrievalOnly", retrievalOnly);
+        config.put("planQuestions", planQuestions);
         config.put("llm", caseRunner.primaryLlmDescription());
         config.put("generationMaxTokens", properties.getGenerationMaxTokens());
         config.put("judgeMaxTokens", properties.getJudgeMaxTokens());
@@ -372,6 +384,7 @@ public class RagEvalService {
         private volatile String message;
         private volatile Instant finishedAt;
         private volatile boolean retrievalOnly;
+        private volatile boolean planQuestions;
 
         RunProgress(String runId, String label, String datasetSource, int topK, int totalCases, String operator) {
             this.runId = runId;

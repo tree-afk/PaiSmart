@@ -1,0 +1,113 @@
+{
+  "note": "全部为评测用虚构资料，机构名、文号、费率、数值均为演示值；不含任何真实客户数据、真实机构内部制度或真实产品条款。",
+  "provenance": "demo-synthetic",
+  "documents": [
+    {
+      "file": "S01-internal-data-security-demo.md",
+      "title": "演示银行数据安全管理办法（内部制度）",
+      "docType": "INTERNAL_POLICY",
+      "jurisdiction": "全国",
+      "issuer": "演示银行总行",
+      "applicableInstitutions": "演示银行总行各部门、各分支机构及附属机构",
+      "effectiveAt": "2026-05-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "S02-internal-shanghai-sales-recording-demo.md",
+      "title": "演示银行上海分行人身保险销售可回溯管理细则（内部制度）",
+      "docType": "INTERNAL_POLICY",
+      "jurisdiction": "上海",
+      "issuer": "演示银行上海分行",
+      "applicableInstitutions": "演示银行上海分行及辖属支行",
+      "effectiveAt": "2026-04-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "S03-internal-chongqing-internet-loan-demo.md",
+      "title": "演示银行重庆分行互联网贷款合作机构管理细则（内部制度）",
+      "docType": "INTERNAL_POLICY",
+      "jurisdiction": "重庆",
+      "issuer": "演示银行重庆分行",
+      "applicableInstitutions": "演示银行重庆分行及辖属机构",
+      "effectiveAt": "2026-06-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "S04-product-critical-illness-2026-demo.md",
+      "title": "演示安康重大疾病保险产品条款（2026版）",
+      "docType": "PRODUCT_TERMS",
+      "jurisdiction": "全国",
+      "issuer": "演示人寿保险有限公司",
+      "applicableInstitutions": "购买演示安康重大疾病保险的个人客户",
+      "effectiveAt": "2026-01-01",
+      "expiresAt": null,
+      "repealed": false
+    },
+    {
+      "file": "S05-product-critical-illness-2025-demo.md",
+      "title": "演示安康重大疾病保险产品条款（2025版）",
+      "docType": "PRODUCT_TERMS",
+      "jurisdiction": "全国",
+      "issuer": "演示人寿保险有限公司",
+      "applicableInstitutions": "购买演示安康重大疾病保险的个人客户",
+      "effectiveAt": "2025-01-01",
+      "expiresAt": "2026-01-01",
+      "repealed": false
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "C01",
+      "synthetic": "S01",
+      "with": "R01",
+      "topic": "数据安全事件报告时限",
+      "syntheticValue": "4小时内报告、48小时内书面报告、每4小时上报进展",
+      "counterpartValue": "2小时内报告、24小时内书面报告、每2小时上报进展",
+      "source": "R01 第六十九条",
+      "resolution": "以监管规定为准，内部制度低于监管要求，应修订"
+    },
+    {
+      "id": "C02",
+      "synthetic": "S02",
+      "with": "R07",
+      "topic": "双录视听资料质检比例",
+      "syntheticValue": "每月不低于10%",
+      "counterpartValue": "每月不低于30%",
+      "source": "R07 四、（一）",
+      "resolution": "以R07为准，内部比例低于监管要求，应修订"
+    },
+    {
+      "id": "C03",
+      "synthetic": "S02",
+      "with": "R07",
+      "topic": "质检问题整改时限",
+      "syntheticValue": "20个工作日内",
+      "counterpartValue": "15个工作日内",
+      "source": "R07 四、（二）",
+      "resolution": "以R07为准，内部时限长于监管要求，应修订"
+    },
+    {
+      "id": "C04",
+      "synthetic": "S03",
+      "with": "R09",
+      "topic": "互联网贷款合作方出资比例",
+      "syntheticValue": "不得低于20%",
+      "counterpartValue": "不得低于30%",
+      "source": "R09 二",
+      "resolution": "以R09为准，内部比例低于监管要求，应修订"
+    },
+    {
+      "id": "C05",
+      "synthetic": "S04",
+      "with": "S05",
+      "topic": "重疾险犹豫期与等待期",
+      "syntheticValue": "犹豫期15日、等待期90日",
+      "counterpartValue": "犹豫期10日、等待期180日",
+      "source": "S04 第四条、第八条 / S05 第四条、第八条",
+      "resolution": "按保单生效时适用的条款版本判断，不得跨版本混用"
+    }
+  ]
+}

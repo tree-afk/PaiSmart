@@ -60,8 +60,7 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
             if (path.matches(".*/upload/chunk.*") ||
                 path.matches(".*/upload/merge.*") ||
                 path.matches(".*/upload/status.*") ||
-                path.matches(".*/documents/uploads.*") ||
-                path.matches(".*/documents/accessible.*") ||
+                path.matches(".*/documents/.*") ||
                 path.matches(".*/documents/page-preview.*") ||
                 path.matches(".*/search/hybrid.*") ||
                 (path.matches(".*/documents/[a-fA-F0-9]{32}.*") &&

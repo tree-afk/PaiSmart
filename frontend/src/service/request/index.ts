@@ -119,16 +119,11 @@ function getFlatRequest(options: Partial<RequestOption<App.Service.Response>> = 
 
         message = normalizeBackendMessage(message);
 
-        // 对需要登录的 403 做兜底处理；带业务文案的 403 继续向用户展示具体错误
-        if (error.response?.status === 403) {
-          const hasAuthorization = Boolean(getAuthorization());
-          const hasBackendMessage = Boolean(backendMessage);
-
-          if (hasAuthorization && !hasBackendMessage) {
-            const authStore = useAuthStore();
-            authStore.resetStore();
-            return;
-          }
+        // 401 表示登录失效；403 只表示无权执行本次操作，保留登录状态。
+        if (error.response?.status === 401 && getAuthorization()) {
+          const authStore = useAuthStore();
+          authStore.resetStore();
+          return;
         }
 
         // the error message is displayed in the modal

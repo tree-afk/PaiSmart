@@ -1,7 +1,9 @@
 package com.yizhaoqi.smartpai.service;
 
+import com.yizhaoqi.smartpai.model.DocumentBuildContext;
 import com.yizhaoqi.smartpai.model.DocumentVector;
 import com.yizhaoqi.smartpai.repository.DocumentVectorRepository;
+import com.yizhaoqi.smartpai.service.chunk.ComplianceClauseChunker;
 import com.yizhaoqi.smartpai.service.parse.ParseConcurrencyLimiter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +26,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -44,6 +47,7 @@ public class ParseService {
     private UsageQuotaService usageQuotaService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ComplianceClauseChunker complianceClauseChunker = new ComplianceClauseChunker();
 
     @Value("${file.parsing.chunk-size}")
     private int chunkSize;
@@ -121,19 +125,29 @@ public class ParseService {
      */
     public void parseAndSave(String fileMd5, InputStream fileStream,
             String userId, String orgTag, boolean isPublic) throws IOException, TikaException {
-        logger.info("开始流式解析文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
-                fileMd5, userId, orgTag, isPublic);
-        
+        parseAndSave(fileMd5, fileStream, userId, orgTag, isPublic, null);
+    }
+
+    /**
+     * 版本化入库：分块带上构建标识（buildId），检索和清理以 build 为单位；
+     * 旧调用（context 为 null）保持 build_id 为空，走 legacy 检索分支
+     */
+    public void parseAndSave(String fileMd5, InputStream fileStream,
+            String userId, String orgTag, boolean isPublic,
+            DocumentBuildContext buildContext) throws IOException, TikaException {
+        logger.info("开始流式解析文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}, buildId: {}",
+                fileMd5, userId, orgTag, isPublic, buildContext == null ? null : buildContext.buildId());
+
         try (ParseConcurrencyLimiter.Permit ignored = parseConcurrencyLimiter.acquire("parse:" + fileMd5);
              BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
             if (isPdfDocument(bufferedStream)) {
-                parsePdfAndSave(fileMd5, bufferedStream, userId, orgTag, isPublic);
+                parsePdfAndSave(fileMd5, bufferedStream, userId, orgTag, isPublic, buildContext);
                 logger.info("PDF 文件 LiteParse 页级解析和入库完成，fileMd5: {}", fileMd5);
                 return;
             }
 
             // 创建一个流式处理器，它会在内部处理父块的切分和子块的保存
-            StreamingContentHandler handler = new StreamingContentHandler(fileMd5, userId, orgTag, isPublic);
+            StreamingContentHandler handler = new StreamingContentHandler(fileMd5, userId, orgTag, isPublic, buildContext);
             Metadata metadata = new Metadata();
             ParseContext context = new ParseContext();
             AutoDetectParser parser = new AutoDetectParser();
@@ -183,20 +197,27 @@ public class ParseService {
      * Tika解析器会调用characters方法，当累积的文本达到"父块"大小时，
      * 就触发processParentChunk方法，进行"子切片"的生成和入库。
      */
-    private class StreamingContentHandler extends BodyContentHandler {
+    class StreamingContentHandler extends BodyContentHandler {
         private final StringBuilder buffer = new StringBuilder();
         private final String fileMd5;
         private final String userId;
         private final String orgTag;
         private final boolean isPublic;
+        private final DocumentBuildContext buildContext;
+        private final boolean clauseAware;
+        private final ComplianceClauseChunker.Session clauseSession;
         private int savedChunkCount = 0;
 
-        public StreamingContentHandler(String fileMd5, String userId, String orgTag, boolean isPublic) {
+        public StreamingContentHandler(String fileMd5, String userId, String orgTag, boolean isPublic,
+                                       DocumentBuildContext buildContext) {
             super(-1); // 禁用Tika的内部写入限制，我们自己管理缓冲区
             this.fileMd5 = fileMd5;
             this.userId = userId;
             this.orgTag = orgTag;
             this.isPublic = isPublic;
+            this.buildContext = buildContext;
+            this.clauseAware = usesClauseChunking(buildContext);
+            this.clauseSession = clauseAware ? complianceClauseChunker.newSession() : null;
         }
 
         @Override
@@ -213,18 +234,26 @@ public class ParseService {
             if (buffer.length() > 0) {
                 processParentChunk();
             }
+            if (clauseSession != null) {
+                List<ParsedChunk> tail = toParsedChunks(clauseSession.finish());
+                if (!tail.isEmpty()) {
+                    this.savedChunkCount = ParseService.this.saveChildChunks(
+                            fileMd5, tail, userId, orgTag, isPublic, this.savedChunkCount, null, buildContext
+                    );
+                }
+            }
         }
 
         private void processParentChunk() {
             String parentChunkText = buffer.toString();
             logger.debug("处理父文本块，大小: {} bytes", parentChunkText.length());
 
-            // 1. 将父块分割成更小的、有语义的子切片
-            List<String> childChunks = ParseService.this.splitTextIntoChunksWithSemantics(parentChunkText, chunkSize);
+            // 1. 将父块分割成更小的、有语义的子切片；合规文档先按章/节/条/款切分
+            List<ParsedChunk> childChunks = ParseService.this.splitIntoChunks(parentChunkText, clauseAware, clauseSession);
 
             // 2. 将子切片批量保存到数据库
             this.savedChunkCount = ParseService.this.saveChildChunks(
-                    fileMd5, childChunks, userId, orgTag, isPublic, this.savedChunkCount, null
+                    fileMd5, childChunks, userId, orgTag, isPublic, this.savedChunkCount, null, buildContext
             );
 
             // 3. 清空缓冲区，为下一个父块做准备
@@ -272,24 +301,30 @@ public class ParseService {
      * 将子切片列表保存到数据库。
      *
      * @param fileMd5         文件的 MD5 哈希值
-     * @param chunks          子切片文本列表
+     * @param chunks          子切片列表，合规文档带条款路径和条款号
      * @param userId          上传用户ID
      * @param orgTag          组织标签
      * @param isPublic        是否公开
      * @param startingChunkId 当前批次的起始分片ID
+     * @param buildContext    构建上下文；为空表示旧路径，分块不写 build_id
      * @return 保存后总的分片数量
      */
-    private int saveChildChunks(String fileMd5, List<String> chunks,
-            String userId, String orgTag, boolean isPublic, int startingChunkId, Integer pageNumber) {
+    private int saveChildChunks(String fileMd5, List<ParsedChunk> chunks,
+            String userId, String orgTag, boolean isPublic, int startingChunkId, Integer pageNumber,
+            DocumentBuildContext buildContext) {
         int currentChunkId = startingChunkId;
-        for (String chunk : chunks) {
+        String buildId = buildContext == null ? null : buildContext.buildId();
+        for (ParsedChunk chunk : chunks) {
             currentChunkId++;
             var vector = new DocumentVector();
+            vector.setBuildId(buildId);
             vector.setFileMd5(fileMd5);
             vector.setChunkId(currentChunkId);
-            vector.setTextContent(chunk);
+            vector.setTextContent(chunk.text());
             vector.setPageNumber(pageNumber);
-            vector.setAnchorText(buildAnchorText(chunk));
+            vector.setAnchorText(buildAnchorText(chunk.text()));
+            vector.setArticlePath(chunk.articlePath());
+            vector.setClauseNo(chunk.clauseNo());
             vector.setUserId(userId);
             vector.setOrgTag(orgTag);
             vector.setPublic(isPublic);
@@ -299,9 +334,163 @@ public class ParseService {
         return currentChunkId;
     }
 
-    private void parsePdfAndSave(String fileMd5, InputStream fileStream, String userId, String orgTag, boolean isPublic) throws IOException {
-        List<LiteParsePage> pages = parsePdfWithLiteParse(fileStream);
+    /**
+     * 有状态版本：流式父块和 PDF 页共用同一个 session，条款状态与未完成行跨缓冲区保留。
+     */
+    private List<ParsedChunk> splitIntoChunks(String text, boolean clauseAware,
+                                              ComplianceClauseChunker.Session session) {
+        if (!clauseAware) {
+            return splitTextIntoChunksWithSemantics(text, chunkSize).stream()
+                    .map(chunk -> new ParsedChunk(chunk, null, null))
+                    .toList();
+        }
+
+        List<ComplianceClauseChunker.ClauseUnit> units = session == null
+                ? complianceClauseChunker.split(text)
+                : session.split(text);
+        return toParsedChunks(units);
+    }
+
+    /**
+     * 先合并同章内相邻的短条款，再对每个（合并后的）条款单元走通用切分。
+     * 只按条款逐条切分会让 22~76 字的短条款各自落成一个分块，一篇制度能占满召回名额。
+     */
+    private List<ParsedChunk> toParsedChunks(List<ComplianceClauseChunker.ClauseUnit> units) {
+        List<ParsedChunk> chunks = new ArrayList<>();
+        for (ComplianceClauseChunker.ClauseUnit unit : mergeShortClauseUnits(units)) {
+            for (String piece : splitTextIntoChunksWithSemantics(unit.text(), chunkSize)) {
+                chunks.add(new ParsedChunk(piece, unit.articlePath(), unit.clauseNo()));
+            }
+        }
+        return chunks;
+    }
+
+    private List<ComplianceClauseChunker.ClauseUnit> mergeShortClauseUnits(
+            List<ComplianceClauseChunker.ClauseUnit> units) {
+        List<ComplianceClauseChunker.ClauseUnit> merged = new ArrayList<>();
+        List<ComplianceClauseChunker.ClauseUnit> group = new ArrayList<>();
+        String groupKey = null;
+        boolean hasGroup = false;
+        for (ComplianceClauseChunker.ClauseUnit unit : units) {
+            if (unit.text() == null || unit.text().isBlank()) {
+                continue;
+            }
+            String key = clauseContainerKey(unit.articlePath());
+            if (hasGroup && !Objects.equals(groupKey, key)) {
+                merged.addAll(mergeClauseGroup(group));
+                group.clear();
+            }
+            group.add(unit);
+            groupKey = key;
+            hasGroup = true;
+        }
+        merged.addAll(mergeClauseGroup(group));
+        return merged;
+    }
+
+    private List<ComplianceClauseChunker.ClauseUnit> mergeClauseGroup(
+            List<ComplianceClauseChunker.ClauseUnit> group) {
+        List<ComplianceClauseChunker.ClauseUnit> result = new ArrayList<>();
+        if (group.isEmpty()) {
+            return result;
+        }
+        int effectiveMin = normalizedMinChunkSize(chunkSize);
+        int maxMerged = chunkSize + normalizedOverlapSize(chunkSize);
+        StringBuilder text = new StringBuilder();
+        String firstPath = null;
+        String lastPath = null;
+        String firstClauseNo = null;
+        String lastClauseNo = null;
+        boolean samePath = true;
+        int count = 0;
+        for (ComplianceClauseChunker.ClauseUnit unit : group) {
+            boolean canMerge = count > 0
+                    && (unit.text().length() < effectiveMin || text.length() < effectiveMin)
+                    && text.length() + 2 + unit.text().length() <= maxMerged;
+            if (count > 0 && !canMerge) {
+                result.add(buildClauseUnit(text, count, firstPath, lastPath, samePath,
+                        firstClauseNo, lastClauseNo));
+                text = new StringBuilder();
+                samePath = true;
+                count = 0;
+            }
+            if (count == 0) {
+                firstPath = unit.articlePath();
+                firstClauseNo = unit.clauseNo();
+            } else {
+                text.append("\n\n");
+                samePath = samePath && Objects.equals(firstPath, unit.articlePath());
+            }
+            text.append(unit.text());
+            lastPath = unit.articlePath();
+            lastClauseNo = unit.clauseNo();
+            count++;
+        }
+        result.add(buildClauseUnit(text, count, firstPath, lastPath, samePath, firstClauseNo, lastClauseNo));
+        return result;
+    }
+
+    private ComplianceClauseChunker.ClauseUnit buildClauseUnit(StringBuilder text, int count,
+            String firstPath, String lastPath, boolean samePath, String firstClauseNo, String lastClauseNo) {
+        if (count == 1) {
+            return new ComplianceClauseChunker.ClauseUnit(text.toString(), firstPath, firstClauseNo);
+        }
+        String articlePath = samePath ? firstPath : commonClauseContainer(firstPath, lastPath);
+        return new ComplianceClauseChunker.ClauseUnit(text.toString(), articlePath,
+                clauseNoRange(firstClauseNo, lastClauseNo));
+    }
+
+    /**
+     * 章/节容器键：条款路径去掉最后一段条号；无条号标记（头部段落）返回 null，单独成组不参与合并。
+     */
+    private String clauseContainerKey(String articlePath) {
+        if (articlePath == null || articlePath.isBlank()) {
+            return null;
+        }
+        int index = articlePath.lastIndexOf(" > ");
+        return index < 0 ? "" : articlePath.substring(0, index);
+    }
+
+    private String commonClauseContainer(String firstPath, String lastPath) {
+        String firstKey = clauseContainerKey(firstPath);
+        String lastKey = clauseContainerKey(lastPath);
+        if (firstKey == null || firstKey.isBlank() || !firstKey.equals(lastKey)) {
+            return null;
+        }
+        return firstKey;
+    }
+
+    private String clauseNoRange(String firstClauseNo, String lastClauseNo) {
+        if (firstClauseNo == null) {
+            return lastClauseNo;
+        }
+        if (lastClauseNo == null) {
+            return firstClauseNo;
+        }
+        return firstClauseNo.equals(lastClauseNo) ? firstClauseNo : firstClauseNo + "至" + lastClauseNo;
+    }
+
+    private static boolean usesClauseChunking(DocumentBuildContext buildContext) {
+        return buildContext != null
+                && buildContext.compliance() != null
+                && buildContext.compliance().docType() != null;
+    }
+
+    private void parsePdfAndSave(String fileMd5, InputStream fileStream, String userId, String orgTag,
+                                 boolean isPublic, DocumentBuildContext buildContext) throws IOException {
+        savePdfPages(fileMd5, parsePdfWithLiteParse(fileStream), userId, orgTag, isPublic, buildContext);
+    }
+
+    /**
+     * 逐页保存 PDF 文本；每页结束显式 pageBreak，保留页面边界和该页原始页码。
+     * 同一 clause session 仍跨页保存章/节/条状态，但不会把下一页首行拼进上一页条款。
+     */
+    void savePdfPages(String fileMd5, List<LiteParsePage> pages, String userId, String orgTag,
+                      boolean isPublic, DocumentBuildContext buildContext) {
         int savedChunkCount = 0;
+        boolean clauseAware = usesClauseChunking(buildContext);
+        ComplianceClauseChunker.Session clauseSession = clauseAware ? complianceClauseChunker.newSession() : null;
+        Integer lastPageNumber = null;
 
         for (LiteParsePage page : pages) {
             String pageText = page.text();
@@ -309,8 +498,26 @@ public class ParseService {
                 continue;
             }
 
-            List<String> childChunks = splitTextIntoChunksWithSemantics(pageText, chunkSize);
-            savedChunkCount = saveChildChunks(fileMd5, childChunks, userId, orgTag, isPublic, savedChunkCount, page.pageNumber());
+            lastPageNumber = page.pageNumber();
+            List<ParsedChunk> childChunks = splitIntoChunks(pageText, clauseAware, clauseSession);
+            savedChunkCount = saveChildChunks(fileMd5, childChunks, userId, orgTag, isPublic,
+                    savedChunkCount, page.pageNumber(), buildContext);
+
+            if (clauseSession != null) {
+                List<ParsedChunk> pageTail = toParsedChunks(clauseSession.pageBreak());
+                if (!pageTail.isEmpty()) {
+                    savedChunkCount = saveChildChunks(fileMd5, pageTail, userId, orgTag, isPublic,
+                            savedChunkCount, page.pageNumber(), buildContext);
+                }
+            }
+        }
+
+        if (clauseSession != null) {
+            List<ParsedChunk> tail = toParsedChunks(clauseSession.finish());
+            if (!tail.isEmpty()) {
+                saveChildChunks(fileMd5, tail, userId, orgTag, isPublic,
+                        savedChunkCount, lastPageNumber, buildContext);
+            }
         }
     }
 
@@ -821,7 +1028,13 @@ public class ParseService {
         return normalized.substring(Math.max(0, normalized.length() - maxLength));
     }
 
-    private record LiteParsePage(int pageNumber, String text) {
+    record LiteParsePage(int pageNumber, String text) {
+    }
+
+    /**
+     * 入库前的分块片段：非合规文档条款字段为空，合规文档由 ComplianceClauseChunker 填充。
+     */
+    private record ParsedChunk(String text, String articlePath, String clauseNo) {
     }
 
     /**
